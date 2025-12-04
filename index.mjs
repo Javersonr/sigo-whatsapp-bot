@@ -60,8 +60,8 @@ app.post('/webhook/whatsapp', async (c) => {
         return c.json({ status: 'erro_token_ou_phone_id' }, 500)
       }
 
-      // Responde no WhatsApp
-      await fetch(`https://graph.facebook.com/v19.0/${waId}/messages`, {
+            // Responde no WhatsApp
+      const resposta = await fetch(`https://graph.facebook.com/v19.0/${waId}/messages`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
@@ -75,7 +75,15 @@ app.post('/webhook/whatsapp', async (c) => {
         })
       })
 
+      const respostaTexto = await resposta.text()
+      console.log('RESPOSTA DA META:', resposta.status, respostaTexto)
+
+      if (!resposta.ok) {
+        return c.json({ status: 'erro_envio_whatsapp', httpStatus: resposta.status, detalhe: respostaTexto }, 500)
+      }
+
       return c.json({ status: 'respondido' })
+
     }
 
     // Outros tipos por enquanto são ignorados
