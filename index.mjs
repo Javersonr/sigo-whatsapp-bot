@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import dotenv from 'dotenv'
-import fetch from 'node-fetch'
 
 dotenv.config()
+
+// Base da API do WhatsApp Cloud
+const GRAPH_API_BASE = 'https://graph.facebook.com/v19.0'
 
 const app = new Hono()
 
@@ -45,27 +47,37 @@ app.post('/webhook/whatsapp', async (c) => {
     const message = value?.messages?.[0]
 
     if (!message) {
-      return c.json({ status: 'sem mensagem' })
+      console.log('Nenhuma mensagem encontrada no payload')
+      return c.json({ status: 'sem_mensagem' })
     }
 
-    const from = message.from              // número do cliente
+    const from = message.from // número do cliente
     const waId = value.metadata?.phone_number_id // id do número do bot
 
     // Se for mensagem de texto
     if (message.type === 'text') {
       const texto = message.text?.body || ''
 
+      console.log('MENSAGEM RECEBIDA DE:', from, 'TEXTO:', texto)
+      console.log('PHONE_NUMBER_ID (waId):', waId)
+      console.log('WHATSAPP_TOKEN está definido?', !!WHATSAPP_TOKEN)
+
       if (!WHATSAPP_TOKEN || !waId) {
         console.error('WHATSAPP_TOKEN ou phone_number_id ausente')
         return c.json({ status: 'erro_token_ou_phone_id' }, 500)
       }
 
-            // Responde no WhatsApp
-      const resposta = await fetch(`https://graph.facebook.com/v19.0/${waId}/messages`, {
+      // Monta URL correta da Graph API
+      const url = `${GRAPH_API_BASE}/${waId}/messages`
+      console.log('Enviando mensagem para URL:', url)
+
+      // No Node 18+ já existe fetch global, não precisa de node-fetch
+      const resposta = await fetch(url, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-          'Content-Type': 'application/json'
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
         },
         body: JSON.stringify({
           messaging_product: 'whatsapp',
@@ -75,21 +87,33 @@ app.post('/webhook/whatsapp', async (c) => {
         })
       })
 
+      const contentType = resposta.headers.get('content-type')
       const respostaTexto = await resposta.text()
-      console.log('RESPOSTA DA META:', resposta.status, respostaTexto)
+
+      console.log('RESPOSTA DA META - status:', resposta.status)
+      console.log('Content-Type:', contentType)
+      console.log('Body (primeiros 300 chars):', respostaTexto.slice(0, 300))
 
       if (!resposta.ok) {
-        return c.json({ status: 'erro_envio_whatsapp', httpStatus: resposta.status, detalhe: respostaTexto }, 500)
+        console.error('Falha ao enviar mensagem para WhatsApp')
+        return c.json(
+          {
+            status: 'erro_envio_whatsapp',
+            httpStatus: resposta.status,
+            detalhe: respostaTexto
+          },
+          500
+        )
       }
 
       return c.json({ status: 'respondido' })
-
     }
 
     // Outros tipos por enquanto são ignorados
+    console.log('Tipo de mensagem não tratado:', message.type)
     return c.json({ status: 'tipo_nao_tratado', tipo: message.type })
   } catch (err) {
-    console.error(err)
+    console.error('Erro no handler do webhook:', err)
     return c.json({ status: 'erro', detalhe: String(err) }, 500)
   }
 })
