@@ -57,7 +57,7 @@ app.post('/webhook/whatsapp', async (c) => {
 
     const from = message.from // número do cliente
     const metadataPhoneId = value.metadata?.phone_number_id // id do número do bot vindo do webhook
-    const waId = WHATSAPP_PHONE_NUMBER_ID || metadataPhoneId
+    const waId = metadataPhoneId || WHATSAPP_PHONE_NUMBER_ID
 
     if (message.type === 'text') {
       const texto = message.text?.body || ''
