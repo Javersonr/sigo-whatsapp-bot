@@ -67,11 +67,10 @@ app.post('/webhook/whatsapp', async (c) => {
       return c.json({ status: 'erro_token_ou_phone_id' }, 500)
     }
 
-    const tipo = message.type
+        const tipo = message.type
     console.log('WA - TIPO DE MENSAGEM:', tipo)
 
     let textoResposta = ''
-    let textoLogExtra = ''
 
     // 🔸 TEXTO
     if (tipo === 'text') {
@@ -89,7 +88,6 @@ app.post('/webhook/whatsapp', async (c) => {
       console.log('WA - IMAGEM RECEBIDA. media_id:', mediaId, 'caption:', caption)
 
       textoResposta = '📷 Recebi sua foto, vou processar.'
-      textoLogExtra = `IMAGEM media_id=${mediaId} caption="${caption}"`
     }
 
     // 🔸 DOCUMENTO (PDF, etc.)
@@ -108,20 +106,15 @@ app.post('/webhook/whatsapp', async (c) => {
       )
 
       textoResposta = '📄 Recebi seu arquivo, vou processar.'
-      textoLogExtra = `DOCUMENTO media_id=${mediaId} filename="${filename}" mime="${mimeType}"`
     }
 
-    // 🔸 Outros tipos (áudio, vídeo, etc.) – por enquanto só loga
+    // 🔸 Outros tipos (áudio, vídeo, etc.)
     else {
       console.log('WA - Tipo de mensagem não tratado ainda:', tipo)
       textoResposta = `Recebi uma mensagem do tipo: ${tipo}. Em breve vou saber tratar isso. 😉`
     }
 
-    if (textoLogExtra) {
-      console.log('WA - INFO EXTRA:', textoLogExtra)
-    }
-
-    // 🔹 Envio da resposta de volta pelo WhatsApp
+    // 🔹 a partir daqui, mantém o envio como você já tinha:
     const url = `${GRAPH_API_BASE}/${waId}/messages`
     console.log('WA - Enviando mensagem para URL:', url)
 
@@ -160,6 +153,7 @@ app.post('/webhook/whatsapp', async (c) => {
     }
 
     return c.json({ status: 'respondido' })
+
   } catch (err) {
     console.error('WA - Erro no handler do webhook:', err)
     return c.json({ status: 'erro', detalhe: String(err) }, 500)
