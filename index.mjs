@@ -1,15 +1,16 @@
+// index.mjs
+
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import dotenv from 'dotenv'
 import OpenAI from 'openai'
-import PDFParser from 'pdf2json'
 
 dotenv.config()
 
-// =============== META WHATSAPP API ==================
+// 🔹 Constantes da API do WhatsApp Cloud
 const GRAPH_API_BASE = 'https://graph.facebook.com/v19.0'
 
-// =============== VARIÁVEIS DE AMBIENTE ===============
+// 🔹 Variáveis de ambiente
 const VERIFY_TOKEN_META = process.env.VERIFY_TOKEN_META || 'sinergia123'
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || ''
 const PHONE_NUMBER_ID =
@@ -17,52 +18,42 @@ const PHONE_NUMBER_ID =
 const MOCHA_OCR_URL = process.env.MOCHA_OCR_URL || ''
 const PORT = Number(process.env.PORT || 3000)
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null
+const openaiApiKey = process.env.OPENAI_API_KEY || ''
+const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null
 
+// 🔹 Log das variáveis principais
 console.log('=== VARIÁVEIS DE AMBIENTE ===')
-console.log('VERIFY_TOKEN_META:', VERIFY_TOKEN_META ? 'OK' : 'VAZIO')
-console.log('WHATSAPP_TOKEN:', WHATSAPP_TOKEN ? 'OK' : 'VAZIO')
-console.log('PHONE_NUMBER_ID:', PHONE_NUMBER_ID || 'VAZIO')
-console.log('MOCHA_OCR_URL:', MOCHA_OCR_URL || 'VAZIO')
-console.log('OPENAI_API_KEY:', OPENAI_API_KEY ? 'OK' : 'VAZIO')
+console.log('VERIFY_TOKEN_META:', VERIFY_TOKEN_META ? 'OK' : 'FALTANDO')
+console.log('WHATSAPP_TOKEN:', WHATSAPP_TOKEN ? 'OK' : 'FALTANDO')
+console.log('PHONE_NUMBER_ID:', PHONE_NUMBER_ID || 'FALTANDO')
+console.log('MOCHA_OCR_URL: ', MOCHA_OCR_URL || 'FALTANDO')
+console.log('OPENAI_API_KEY:', openaiApiKey ? 'OK' : 'FALTANDO')
 console.log('==============================')
+
+if (!WHATSAPP_TOKEN) {
+  console.warn('[WARN] WHATSAPP_TOKEN não definido.')
+}
+if (!PHONE_NUMBER_ID) {
+  console.warn('[WARN] PHONE_NUMBER_ID não definido.')
+}
+if (!MOCHA_OCR_URL) {
+  console.warn('[WARN] MOCHA_OCR_URL não definido.')
+}
+if (!openaiApiKey) {
+  console.warn('[WARN] OPENAI_API_KEY não definido. OCR não vai funcionar.')
+}
 
 const app = new Hono()
 
-// =====================================================
-// 🔹 Extrair TEXTO de PDF usando pdf2json
-// =====================================================
-async function extrairTextoPDF(buffer) {
-  return new Promise((resolve, reject) => {
-    try {
-      const pdfParser = new PDFParser()
+// 🔹 Memória simples para guardar último OCR pendente por usuário
+const ocrPendentes = globalThis.ocrPendentes || (globalThis.ocrPendentes = {})
 
-      pdfParser.on('pdfParser_dataError', (errData) => {
-        console.error('[PDF] Erro no parser:', errData.parserError)
-        reject(errData.parserError)
-      })
-
-      pdfParser.on('pdfParser_dataReady', () => {
-        const text = pdfParser.getRawTextContent() || ''
-        console.log('[PDF] Texto extraído (primeiros 300 chars):', text.slice(0, 300))
-        resolve(text)
-      })
-
-      pdfParser.parseBuffer(buffer)
-    } catch (err) {
-      console.error('[PDF] Erro geral ao tentar ler PDF:', err)
-      reject(err)
-    }
-  })
-}
-
-// =====================================================
-// 🔹 Enviar mensagem WhatsApp
-// =====================================================
+/**
+ * 🔹 Enviar mensagem de texto no WhatsApp
+ */
 async function enviarMensagemWhatsApp(to, body) {
   if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-    console.error('[ERRO] WHATSAPP_TOKEN ou PHONE_NUMBER_ID não configurados.')
+    console.error('[ERRO] Faltam WHATSAPP_TOKEN ou PHONE_NUMBER_ID.')
     return
   }
 
@@ -91,86 +82,132 @@ async function enviarMensagemWhatsApp(to, body) {
   console.log('[WhatsApp][STATUS]', resp.status)
   console.log('[WhatsApp][RESPONSE]', JSON.stringify(data, null, 2))
 
+  if (!resp.ok) {
+    console.error('[WhatsApp] Erro ao enviar mensagem:', resp.status, data)
+    throw new Error(`Erro ao enviar mensagem WhatsApp: ${resp.status}`)
+  }
+
   return data
 }
 
-// =====================================================
-// 🔹 Buscar dados da mídia
-// =====================================================
-async function buscarInfoMidia(mediaId) {
+/**
+ * 🔹 Resposta simples para TEXTO (quando não for SIM)
+ */
+async function responderIA(texto) {
+  return `Recebido: ${texto}`
+}
+
+/**
+ * 🔹 Buscar metadados da mídia no WhatsApp
+ */
+async function buscarInfoMidiaWhatsApp(mediaId) {
   const url = `${GRAPH_API_BASE}/${mediaId}`
 
   console.log('[WhatsApp][MEDIA INFO][GET]', url)
 
   const resp = await fetch(url, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    },
   })
 
+  const data = await resp.json().catch(() => ({}))
+
+  console.log('[WhatsApp][MEDIA INFO][RESPONSE]', JSON.stringify(data, null, 2))
+
   if (!resp.ok) {
-    console.error('[WhatsApp][MEDIA INFO] Erro status:', resp.status)
-    throw new Error('Erro ao buscar metadados da mídia')
+    console.error('[WhatsApp][Media Info] Erro ao buscar mídia:', resp.status, data)
+    throw new Error('Erro ao buscar info da mídia')
   }
 
-  const data = await resp.json()
-  console.log('[WhatsApp][MEDIA INFO][RESPONSE]', JSON.stringify(data, null, 2))
-  return data
+  return data // { url, mime_type, id, ... }
 }
 
-// =====================================================
-// 🔹 Baixar arquivo da mídia
-// =====================================================
-async function baixarMidia(mediaId) {
-  const meta = await buscarInfoMidia(mediaId)
+/**
+ * 🔹 Baixar o arquivo binário da mídia no WhatsApp
+ */
+async function baixarMidiaWhatsApp(mediaId) {
+  const info = await buscarInfoMidiaWhatsApp(mediaId)
 
-  const resp = await fetch(meta.url, {
+  const fileResp = await fetch(info.url, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    },
   })
 
-  if (!resp.ok) {
-    console.error('[WhatsApp][MEDIA DOWNLOAD] Erro status:', resp.status)
+  if (!fileResp.ok) {
+    console.error('[WhatsApp][Media Download] Erro ao baixar mídia:', fileResp.status)
     throw new Error('Erro ao baixar mídia')
   }
 
-  const buffer = Buffer.from(await resp.arrayBuffer())
+  const arrayBuffer = await fileResp.arrayBuffer()
+  const buffer = Buffer.from(arrayBuffer)
 
-  console.log('[WhatsApp][MEDIA DOWNLOAD] mime_type=', meta.mime_type)
+  console.log('[WhatsApp][MEDIA DOWNLOAD] mime_type=', info.mime_type)
 
   return {
     buffer,
-    mimeType: meta.mime_type || 'application/octet-stream',
-    fileUrl: meta.url,
+    mimeType: info.mime_type || 'application/octet-stream',
+    fileUrl: info.url || null,
   }
 }
 
-// =====================================================
-// 🔹 OCR IMAGEM VIA OPENAI
-// =====================================================
-async function ocrImagem(buffer, mimeType) {
-  if (!openai) {
-    console.error('[OCR IMAGEM] OPENAI_API_KEY ausente.')
-    return {}
+/**
+ * 🔹 Helper para extrair JSON da resposta da OpenAI
+ */
+function extrairJsonDaResposta(message) {
+  let content = message.content
+  if (Array.isArray(content)) {
+    content = content.map((c) => c.text || '').join('\n')
   }
 
-  const base64 = buffer.toString('base64')
+  let cleaned = content
+  cleaned = cleaned.replace(/```json/gi, '')
+  cleaned = cleaned.replace(/```/g, '').trim()
 
-  const resp = await openai.chat.completions.create({
+  const match = cleaned.match(/\{[\s\S]*\}/)
+  const jsonText = match ? match[0] : cleaned
+
+  return JSON.parse(jsonText)
+}
+
+/**
+ * 🔹 OCR IMAGEM (OpenAI Vision)
+ */
+async function processarImagem(buffer, mimeType = 'image/jpeg') {
+  if (!openaiClient) {
+    throw new Error('OPENAI_API_KEY não configurado')
+  }
+
+  console.log('[OCR] Processando como IMAGEM...')
+
+  const base64 = buffer.toString('base64')
+  const dataUrl = `data:${mimeType};base64,${base64}`
+
+  const resp = await openaiClient.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
       {
         role: 'system',
         content:
-          'Você é um extrator de informações de comprovantes. ' +
-          'Retorne APENAS JSON válido com: fornecedor, cnpj, valor, data, descricao, texto_completo.',
+          'Você é um extrator de informações de comprovantes, notas fiscais, boletos e contas de consumo. ' +
+          'Retorne APENAS um JSON com: fornecedor, cnpj, valor, data, descricao, texto_completo. ' +
+          'Valor como número (ex: 1234.56). Data no formato DD/MM/YYYY ou YYYY-MM-DD.',
       },
       {
         role: 'user',
         content: [
-          { type: 'text', text: 'Extraia os dados deste comprovante/nota:' },
+          {
+            type: 'text',
+            text: 'Extraia os dados deste comprovante/nota fiscal/conta:',
+          },
           {
             type: 'image_url',
-            image_url: { url: `data:${mimeType};base64,${base64}` },
+            image_url: {
+              url: dataUrl,
+            },
           },
         ],
       },
@@ -179,120 +216,165 @@ async function ocrImagem(buffer, mimeType) {
 
   console.log('[OCR IMAGEM][RAW MESSAGE]', resp.choices[0].message)
 
-  let content = resp.choices[0].message.content
-  if (Array.isArray(content)) {
-    content = content.map((c) => c.text || '').join('\n')
+  let dadosBase = {
+    fornecedor: '',
+    cnpj: '',
+    valor: '',
+    data: '',
+    descricao: '',
+    texto_completo: '',
   }
 
-  const match = content.match(/\{[\s\S]*\}/)
-
   try {
-    const json = JSON.parse(match ? match[0] : content)
-    return json
+    const parsed = extrairJsonDaResposta(resp.choices[0].message)
+    const dados = { ...dadosBase, ...parsed }
+    console.log('[OCR] Dados extraídos:', dados)
+    return dados
   } catch (e) {
     console.error('[OCR IMAGEM] Erro ao parsear JSON:', e)
-    return {
-      fornecedor: '',
-      cnpj: '',
-      valor: '',
-      data: '',
-      descricao: '',
-      texto_completo: content,
+    let raw = resp.choices[0].message.content
+    if (Array.isArray(raw)) {
+      raw = raw.map((c) => c.text || '').join('\n')
     }
+    return { ...dadosBase, texto_completo: raw }
   }
 }
 
-// =====================================================
-// 🔹 OCR PDF (extrai texto + IA)
-// =====================================================
-async function ocrPdf(buffer) {
-  if (!openai) {
-    console.error('[OCR PDF] OPENAI_API_KEY ausente.')
-    return {}
+/**
+ * 🔹 OCR PDF usando Vision (PDF como imagem base64)
+ */
+async function processarPdf(buffer) {
+  if (!openaiClient) {
+    throw new Error('OPENAI_API_KEY não configurado')
   }
 
-  let texto = ''
-  try {
-    texto = await extrairTextoPDF(buffer)
-  } catch (e) {
-    console.error('[OCR PDF] Erro ao extrair texto do PDF:', e)
-    return {
-      fornecedor: '',
-      cnpj: '',
-      valor: '',
-      data: '',
-      descricao: '',
-      texto_completo: '',
-    }
-  }
+  console.log('[OCR] Processando como PDF via Vision...')
 
-  if (!texto.trim()) {
-    console.warn('[OCR PDF] Texto extraído vazio.')
-    return {
-      fornecedor: '',
-      cnpj: '',
-      valor: '',
-      data: '',
-      descricao: '',
-      texto_completo: '',
-    }
-  }
+  const base64 = buffer.toString('base64')
+  const dataUrl = `data:application/pdf;base64,${base64}`
 
-  const resp = await openai.chat.completions.create({
+  const resp = await openaiClient.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
       {
         role: 'system',
         content:
-          'Você é um extrator de informações de comprovantes, boletos e notas. ' +
-          'Retorne APENAS JSON válido com: fornecedor, cnpj, valor, data, descricao, texto_completo.',
+          'Você é um extrator de informações de comprovantes, notas fiscais, boletos e contas de consumo (incluindo PDFs escaneados). ' +
+          'Retorne APENAS um JSON com: fornecedor, cnpj, valor, data, descricao, texto_completo. ' +
+          'Valor como número (ex: 1234.56). Data no formato DD/MM/YYYY ou YYYY-MM-DD.',
       },
       {
         role: 'user',
-        content:
-          'Segue o texto de um documento, extraia os dados estruturados e responda somente o JSON:\n\n' +
-          texto,
+        content: [
+          {
+            type: 'text',
+            text: 'Extraia os dados deste documento (PDF de comprovante/nota/conta).',
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: dataUrl,
+            },
+          },
+        ],
       },
     ],
   })
 
   console.log('[OCR PDF][RAW MESSAGE]', resp.choices[0].message)
 
-  let content = resp.choices[0].message.content
-  if (Array.isArray(content)) {
-    content = content.map((c) => c.text || '').join('\n')
+  let dadosBase = {
+    fornecedor: '',
+    cnpj: '',
+    valor: '',
+    data: '',
+    descricao: '',
+    texto_completo: '',
   }
 
-  const match = content.match(/\{[\s\S]*\}/)
-
   try {
-    const json = JSON.parse(match ? match[0] : content)
-    return {
-      ...json,
-      texto_completo: texto,
-    }
+    const parsed = extrairJsonDaResposta(resp.choices[0].message)
+    const dados = { ...dadosBase, ...parsed }
+    console.log('[OCR] Dados extraídos (PDF):', dados)
+    return dados
   } catch (e) {
     console.error('[OCR PDF] Erro ao parsear JSON:', e)
-    return {
-      fornecedor: '',
-      cnpj: '',
-      valor: '',
-      data: '',
-      descricao: '',
-      texto_completo: texto,
+    let raw = resp.choices[0].message.content
+    if (Array.isArray(raw)) {
+      raw = raw.map((c) => c.text || '').join('\n')
     }
+    return { ...dadosBase, texto_completo: raw }
   }
 }
 
-// =====================================================
-// 🔹 WEBHOOK GET (Verificação)
-// =====================================================
+/**
+ * 🔹 Enviar DADOS para SIGO Obras (Mocha) – só depois do SIM
+ */
+async function enviarDadosParaMochaOCR({
+  userPhone,
+  fileUrl,
+  fornecedor,
+  cnpj,
+  valor,
+  data,
+  descricao,
+  textoOcr,
+}) {
+  if (!MOCHA_OCR_URL) {
+    console.error('[ERRO] MOCHA_OCR_URL não configurado.')
+    throw new Error('MOCHA_OCR_URL não configurado')
+  }
+
+  const payload = {
+    user_phone: userPhone,
+    file_url: fileUrl,
+    fornecedor,
+    cnpj,
+    valor,
+    data,
+    descricao,
+    texto_ocr: textoOcr,
+  }
+
+  console.log('[MOCHA OCR][REQUEST]', JSON.stringify(payload, null, 2))
+
+  const resp = await fetch(MOCHA_OCR_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+
+  let dataResp = {}
+  try {
+    dataResp = await resp.json()
+  } catch {
+    dataResp = {}
+  }
+
+  console.log('[MOCHA OCR][STATUS]', resp.status)
+  console.log('[MOCHA OCR][RESPONSE]', JSON.stringify(dataResp, null, 2))
+
+  if (!resp.ok) {
+    throw new Error(`Erro ao enviar dados OCR para Mocha: ${resp.status}`)
+  }
+
+  return dataResp
+}
+
+// 🔹 Rota raiz – teste rápido
+app.get('/', (c) => {
+  return c.text('SIGO WHATSAPP BOT OK')
+})
+
+// 🔹 Verificação de webhook (GET) – configuração na Meta
 app.get('/webhook/whatsapp', (c) => {
   const mode = c.req.query('hub.mode')
   const token = c.req.query('hub.verify_token')
   const challenge = c.req.query('hub.challenge')
 
-  console.log('[Webhook GET] mode=', mode, ' token=', token, ' challenge=', challenge)
+  console.log('[Webhook GET] Recebido ->', { mode, token, challenge })
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN_META) {
     console.log('[Webhook GET] Verificação OK')
@@ -300,19 +382,19 @@ app.get('/webhook/whatsapp', (c) => {
   }
 
   console.warn('[Webhook GET] Falha na verificação do webhook')
-  return c.text('Erro validação', 403)
+  return c.text('Erro na validação do webhook', 403)
 })
 
-// =====================================================
-// 🔹 WEBHOOK POST (Mensagens)
-// =====================================================
+// 🔹 Recebimento de mensagens (POST)
 app.post('/webhook/whatsapp', async (c) => {
   const body = await c.req.json().catch(() => ({}))
 
   console.log('[Webhook POST] BODY RECEBIDO:')
   console.log(JSON.stringify(body, null, 2))
 
-  const value = body.entry?.[0]?.changes?.[0]?.value
+  const entry = body.entry?.[0]
+  const change = entry?.changes?.[0]
+  const value = change?.value
   const message = value?.messages?.[0]
 
   if (!message) {
@@ -323,80 +405,77 @@ app.post('/webhook/whatsapp', async (c) => {
   const from = message.from
   const type = message.type
 
-  console.log(`[Mensagem de ${from}] type=${type}`)
-
-  // ================= TEXTO ========================
+  // 🟦 1) TEXTO
   if (type === 'text') {
-    const texto = message.text?.body?.trim() || ''
-    const upper = texto.toUpperCase()
+    const textoRecebido = message.text?.body || ''
 
-    console.log(`[Texto recebido] "${texto}"`)
+    console.log(`[Texto recebido de ${from}]: ${textoRecebido}`)
 
-    // CONFIRMAÇÃO SIM -> envia o último OCR salvo pro Mocha
-    if (upper === 'SIM' && global.lastData?.[from]) {
-      console.log('[CONFIRMAÇÃO SIM] Enviando dados ao Mocha...', global.lastData[from])
-      try {
-        if (!MOCHA_OCR_URL) {
-          console.error('[MOCHA OCR] MOCHA_OCR_URL não configurado.')
-          await enviarMensagemWhatsApp(
-            from,
-            'Erro na integração com o SIGO Obras (URL não configurada).'
-          )
-        } else {
-          const respMocha = await fetch(MOCHA_OCR_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(global.lastData[from]),
-          })
+    const normalizado = textoRecebido.trim().toUpperCase()
 
-          let dataMocha = {}
-          try {
-            dataMocha = await respMocha.json()
-          } catch {
-            dataMocha = {}
-          }
+    // 🔸 Fluxo de confirmação SIM – só aqui manda pro SIGO Obras
+    if (normalizado === 'SIM') {
+      const pendente = ocrPendentes[from]
 
-          console.log('[MOCHA OCR][STATUS]', respMocha.status)
-          console.log('[MOCHA OCR][RESPONSE]', JSON.stringify(dataMocha, null, 2))
-
-          if (respMocha.ok) {
-            await enviarMensagemWhatsApp(
-              from,
-              'Perfeito! ✅\nO lançamento foi enviado para o SIGO Obras.\nSe algo estiver errado, envie outro comprovante.'
-            )
-          } else {
-            await enviarMensagemWhatsApp(
-              from,
-              'Ocorreu um erro ao lançar no SIGO Obras. Tente novamente mais tarde.'
-            )
-          }
-        }
-      } catch (e) {
-        console.error('[MOCHA OCR] Erro ao enviar para SIGO Obras:', e)
+      if (!pendente) {
         await enviarMensagemWhatsApp(
           from,
-          'Erro ao enviar os dados para o SIGO Obras. Tente novamente mais tarde.'
+          'Não encontrei nenhum comprovante pendente para lançar. ' +
+            'Envie primeiro uma foto ou PDF do comprovante.'
+        )
+        return c.json({ status: 'ok' })
+      }
+
+      try {
+        console.log('[CONFIRMAÇÃO SIM] Enviando dados ao Mocha...', pendente)
+        await enviarDadosParaMochaOCR(pendente)
+
+        await enviarMensagemWhatsApp(
+          from,
+          'Perfeito! ✅\n' +
+            'O lançamento foi enviado para o SIGO Obras.\n' +
+            'Se algo estiver errado, envie outro comprovante ou fale "ajuda".'
+        )
+
+        // Limpa pendente
+        delete ocrPendentes[from]
+      } catch (e) {
+        console.error('[MOCHA OCR] Erro ao enviar dados após SIM:', e)
+        await enviarMensagemWhatsApp(
+          from,
+          'Tentei lançar no SIGO Obras, mas ocorreu um erro ao integrar com o sistema. ' +
+            'Tente novamente em alguns minutos ou fale com o suporte.'
         )
       }
 
       return c.json({ status: 'ok' })
     }
 
-    // Texto normal
-    await enviarMensagemWhatsApp(from, `Recebido: ${texto}`)
+    // 🔸 Outros textos – resposta simples
+    const resposta = await responderIA(textoRecebido)
+
+    try {
+      await enviarMensagemWhatsApp(from, resposta)
+    } catch (err) {
+      console.error('[ERRO AO ENVIAR RESPOSTA TEXTO]', err)
+    }
+
     return c.json({ status: 'ok' })
   }
 
-  // ================ ARQUIVOS (PDF/IMAGEM) ======================
+  // 🟨 2) DOCUMENTO / IMAGEM
   if (type === 'document' || type === 'image') {
+    console.log(`[Mensagem de ${from}] type=${type}`)
     try {
-      let mediaId = null
+      let mediaId
       let mimeType = 'application/octet-stream'
 
       if (type === 'document') {
         mediaId = message.document?.id
         mimeType = message.document?.mime_type || mimeType
-      } else if (type === 'image') {
+      }
+
+      if (type === 'image') {
         mediaId = message.image?.id
         mimeType = message.image?.mime_type || mimeType
       }
@@ -405,15 +484,22 @@ app.post('/webhook/whatsapp', async (c) => {
         console.error('[ERRO] Nenhum mediaId encontrado na mensagem.')
         await enviarMensagemWhatsApp(
           from,
-          'Não consegui identificar o arquivo enviado. Tente reenviar o documento ou imagem.'
+          'Não consegui identificar o arquivo enviado. Tente novamente.'
         )
         return c.json({ status: 'ok' })
       }
 
-      console.log(`[Arquivo recebido de ${from}] mediaId=${mediaId} mimeType=${mimeType}`)
+      console.log(
+        `[Arquivo recebido de ${from}] mediaId=${mediaId} mimeType=${mimeType}`
+      )
 
-      const midia = await baixarMidia(mediaId)
+      // 1) Baixar arquivo
+      const midia = await baixarMidiaWhatsApp(mediaId)
+      const buffer = midia.buffer
+      const mime = mimeType || midia.mimeType
+      const fileUrl = midia.fileUrl
 
+      // 2) Rodar OCR adequado (imagem x pdf)
       let dados = {
         fornecedor: '',
         cnpj: '',
@@ -423,78 +509,96 @@ app.post('/webhook/whatsapp', async (c) => {
         texto_completo: '',
       }
 
-      if (midia.mimeType === 'application/pdf') {
-        console.log('[OCR] Processando como PDF...')
-        dados = await ocrPdf(midia.buffer)
-      } else if (midia.mimeType.startsWith('image/')) {
-        console.log('[OCR] Processando como IMAGEM...')
-        dados = await ocrImagem(midia.buffer, midia.mimeType)
+      if (mime.startsWith('image/')) {
+        dados = await processarImagem(buffer, mime)
+      } else if (mime === 'application/pdf') {
+        dados = await processarPdf(buffer)
       } else {
-        console.warn('[OCR] Tipo de arquivo não suportado para OCR automático:', midia.mimeType)
+        console.log('[OCR] Tipo de arquivo não suportado:', mime)
       }
 
-      console.log('[OCR] Dados extraídos:', dados)
+      const fornecedor = dados.fornecedor || ''
+      const cnpj = dados.cnpj || ''
+      const valor = dados.valor || ''
+      const dataDoc = dados.data || ''
+      const descricao = dados.descricao || ''
+      const textoCompleto = dados.texto_completo || ''
 
-      // Guarda para confirmação SIM depois
-      global.lastData ??= {}
-      global.lastData[from] = {
-        user_phone: from,
-        file_url: midia.fileUrl,
-        fornecedor: dados.fornecedor || '',
-        cnpj: dados.cnpj || '',
-        valor: dados.valor || '',
-        data: dados.data || '',
-        descricao: dados.descricao || '',
-        texto_ocr: dados.texto_completo || '',
+      // Normalizar valor para exibição
+      let valorFormatado = 'N/D'
+      if (typeof valor === 'number') {
+        valorFormatado = `R$ ${valor.toFixed(2).replace('.', ',')}`
+      } else if (typeof valor === 'string' && valor.trim()) {
+        valorFormatado = valor
       }
 
-      const fornecedor = dados.fornecedor || 'N/D'
-      const cnpj = dados.cnpj || 'N/D'
-      const dataDoc = dados.data || 'N/D'
-      const valor = dados.valor || 'N/D'
-      const descricao = dados.descricao || 'N/D'
+      // Guardar como pendente para confirmação SIM
+      ocrPendentes[from] = {
+        userPhone: from,
+        fileUrl: fileUrl,
+        fornecedor,
+        cnpj,
+        valor,
+        data: dataDoc,
+        descricao,
+        textoOcr: textoCompleto,
+      }
 
+      // Se não conseguiu extrair nada estruturado
+      if (!fornecedor && !cnpj && !valor && !dataDoc && !descricao) {
+        if (mime === 'application/pdf') {
+          await enviarMensagemWhatsApp(
+            from,
+            'Recebi o seu PDF 📄 e já deixei pendente para análise no SIGO Obras.\n\n' +
+              'A leitura automática não identificou claramente os dados. ' +
+              'Se possível, também envie uma FOTO bem nítida do comprovante para melhorar a leitura.'
+          )
+        } else {
+          await enviarMensagemWhatsApp(
+            from,
+            'Recebi o arquivo e já deixei pendente para análise no SIGO Obras, mas não consegui identificar ' +
+              'claramente os dados do comprovante 😕\n\nTente enviar uma foto mais nítida, enquadrando só o documento.'
+          )
+        }
+
+        return c.json({ status: 'ok' })
+      }
+
+      // Se conseguiu extrair dados estruturados
       const msgResumo =
         `Recebi o seu comprovante ✅\n\n` +
-        `Fornecedor: ${fornecedor}\n` +
-        `CNPJ: ${cnpj}\n` +
-        `Data: ${dataDoc}\n` +
-        `Valor: ${valor}\n` +
-        `Descrição: ${descricao}\n\n` +
+        `Fornecedor: ${fornecedor || 'N/D'}\n` +
+        `CNPJ: ${cnpj || 'N/D'}\n` +
+        `Data: ${dataDoc || 'N/D'}\n` +
+        `Valor: ${valorFormatado}\n` +
+        `Descrição: ${descricao || 'N/D'}\n\n` +
         `Se estiver correto, responda *SIM* para lançar no financeiro.`
 
       await enviarMensagemWhatsApp(from, msgResumo)
 
       return c.json({ status: 'ok' })
-    } catch (e) {
-      console.error('[ERRO AO PROCESSAR DOCUMENTO/IMAGEM]', e)
+    } catch (err) {
+      console.error('[ERRO AO PROCESSAR DOCUMENTO/IMAGEM]', err)
 
       await enviarMensagemWhatsApp(
         from,
-        'Erro ao processar seu arquivo 📄🖼️\n\n' +
-          'Tente enviar outra imagem mais nítida (sem cortes e com boa iluminação),\n' +
-          'ou, se possível, envie o comprovante em PDF diretamente.'
+        'Erro ao processar seu arquivo. Tente outra imagem ou PDF.'
       )
 
       return c.json({ status: 'error' })
     }
   }
 
-  console.log('[Webhook POST] Tipo não tratado:', type)
-  await enviarMensagemWhatsApp(
-    from,
-    'Por enquanto, só consigo ler texto, imagens e PDFs.'
-  )
+  // Outros tipos
+  console.log(`[Tipo não tratado de ${from}]: ${type}`)
+  await enviarMensagemWhatsApp(from, 'Por enquanto só consigo ler texto, imagens e PDFs.')
   return c.json({ status: 'ok' })
 })
 
-// =====================================================
-// 🔹 ROTA TESTE
-// =====================================================
-app.get('/', (c) => c.text('SIGO WHATSAPP BOT OK'))
+// 🔹 Sobe o servidor
+serve({
+  fetch: app.fetch,
+  port: PORT,
+})
 
-// =====================================================
-// 🔹 INICIAR SERVIDOR
-// =====================================================
-serve({ fetch: app.fetch, port: PORT })
 console.log(`🚀 SIGO WHATSAPP BOT rodando na porta ${PORT}`)
