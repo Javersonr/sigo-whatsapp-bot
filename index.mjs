@@ -1,7 +1,7 @@
 // ============================================================================
-//  BOT WHATSAPP – OCR IMAGEM + PDF DIGITAL – ENVIO PARA SIGO OBRAS
-//  Versão estável 06/12/2025
-//  OBS: PDF ESCANEADO NÃO USA VISION (OpenAI NÃO ACEITA image_url PDF)
+//  BOT WHATSAPP – OCR IMAGEM + PDF DIGITAL + PDF ESCANEADO
+//  Envio para SIGO OBRAS (Mocha) – /api/ocr-receber-arquivo
+//  Versão: 06/12/2025
 // ============================================================================
 
 import { Hono } from "hono";
@@ -10,16 +10,24 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import fetch from "node-fetch";
 import { createRequire } from "module";
+import fs from "fs/promises";
+import path from "path";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
-// pdf-parse via require (CommonJS)
+// ============================================================================
+//  DEPENDÊNCIAS COMMONJS (pdf-parse e pdf-poppler)
+// ============================================================================
 const require = createRequire(import.meta.url);
+
 const pdfParseModule = require("pdf-parse");
 const pdfParse =
   typeof pdfParseModule === "function"
     ? pdfParseModule
     : pdfParseModule.default;
+
+const { Poppler } = require("pdf-poppler");
 
 // ============================================================================
 //  CONFIG
@@ -49,9 +57,45 @@ console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "FALTANDO");
 console.log("MOCHA_OCR_URL:", MOCHA_OCR_URL || "FALTANDO");
 console.log("=================");
 
-// memória temporária
+// memória temporária até o usuário confirmar com "SIM"
 const ocrPendentes =
   globalThis.ocrPendentes || (globalThis.ocrPendentes = {});
+
+// ============================================================================
+//  CONVERTER PDF -> PNG (1ª PÁGINA) PARA OCR VISUAL
+// ============================================================================
+async function converterPdfParaPngPrimeiraPagina(buffer) {
+  const tmpDir = "/tmp"; // funciona bem no Railway
+  const id = randomUUID();
+
+  const inputPath = path.join(tmpDir, `ocr_${id}.pdf`);
+  const outputPrefix = path.join(tmpDir, `ocr_${id}`);
+
+  // 1) Grava o PDF em disco
+  await fs.writeFile(inputPath, buffer);
+
+  const poppler = new Poppler();
+
+  // 2) Converte usando pdf-poppler (via pdftocairo)
+  //    Saída: ocr_<id>.png
+  await poppler.pdfToCairo(inputPath, outputPrefix, {
+    pngFile: true,
+    singleFile: true,
+    firstPageToConvert: 1,
+    lastPageToConvert: 1,
+  });
+
+  const pngPath = `${outputPrefix}.png`;
+
+  // 3) Lê o PNG gerado
+  const pngBuffer = await fs.readFile(pngPath);
+
+  // 4) Limpa arquivos temporários
+  await fs.unlink(inputPath).catch(() => {});
+  await fs.unlink(pngPath).catch(() => {});
+
+  return pngBuffer;
+}
 
 // ============================================================================
 //  ENVIAR TEXTO NO WHATSAPP
@@ -84,7 +128,7 @@ async function enviarMensagemWhatsApp(to, body) {
 }
 
 // ============================================================================
-//  BAIXAR MÍDIA DO WHATSAPP
+//  BUSCAR E BAIXAR MÍDIA DO WHATSAPP
 // ============================================================================
 async function buscarInfoMidia(mediaId) {
   const url = `${GRAPH_API_BASE}/${mediaId}`;
@@ -114,9 +158,21 @@ async function baixarMidia(mediaId) {
 }
 
 // ============================================================================
-//  OCR IMAGEM (VISION)
+//  OCR IMAGEM – OpenAI Vision (gpt-4o-mini)
 // ============================================================================
 async function processarImagem(buffer, mimeType) {
+  if (!openai) {
+    console.error("[OCR IMAGEM] OPENAI_API_KEY não configurada.");
+    return {
+      fornecedor: "",
+      cnpj: "",
+      valor: "",
+      data: "",
+      descricao: "",
+      texto_completo: "",
+    };
+  }
+
   const b64 = buffer.toString("base64");
   const dataUrl = `data:${mimeType};base64,${b64}`;
 
@@ -144,6 +200,7 @@ async function processarImagem(buffer, mimeType) {
   try {
     return JSON.parse(texto);
   } catch {
+    console.warn("[OCR IMAGEM] Falha ao parsear JSON, enviando texto bruto.");
     return {
       fornecedor: "",
       cnpj: "",
@@ -156,7 +213,7 @@ async function processarImagem(buffer, mimeType) {
 }
 
 // ============================================================================
-//  OCR PDF (Somente PDF DIGITAL – texto selecionável)
+//  OCR PDF (DIGITAL + ESCANEADO)
 // ============================================================================
 async function processarPdf(buffer) {
   console.log("[OCR PDF] Tentando extrair texto via pdf-parse...");
@@ -170,12 +227,70 @@ async function processarPdf(buffer) {
     console.log("[OCR PDF] Erro pdf-parse:", e.message);
   }
 
-  // remover espaços
   const textoTratado = textoExtraido.replace(/\s+/g, "").trim();
 
-  // Se NÃO tem texto → PDF escaneado
-  if (!textoTratado || textoTratado.length <= 20) {
-    console.log("[OCR PDF] Parece um PDF escaneado. (Sem OCR no momento)");
+  // ================================================================
+  // CASO 1 – PDF DIGITAL (tem texto via pdf-parse)
+  // ================================================================
+  if (textoTratado && textoTratado.length > 20) {
+    console.log("[OCR PDF] PDF digital detectado. Enviando TEXTO ao GPT...");
+
+    if (!openai) {
+      console.error("[OCR PDF] OPENAI_API_KEY não configurada.");
+      return {
+        fornecedor: "",
+        cnpj: "",
+        valor: "",
+        data: "",
+        descricao: "",
+        texto_completo: textoExtraido,
+      };
+    }
+
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Analise o texto de comprovantes e retorne apenas JSON: fornecedor, cnpj, data, valor, descricao, texto_completo.",
+        },
+        {
+          role: "user",
+          content: textoExtraido.slice(0, 16000),
+        },
+      ],
+    });
+
+    let resposta = resp.choices?.[0]?.message?.content || "";
+    resposta = resposta.replace(/```json/gi, "").replace(/```/g, "");
+
+    try {
+      const json = JSON.parse(resposta);
+      json.texto_completo = textoExtraido;
+      return json;
+    } catch {
+      console.warn("[OCR PDF] Falha ao parsear JSON de PDF digital.");
+      return {
+        fornecedor: "",
+        cnpj: "",
+        valor: "",
+        data: "",
+        descricao: "",
+        texto_completo: textoExtraido,
+      };
+    }
+  }
+
+  // ================================================================
+  // CASO 2 – PDF ESCANEADO (sem texto) → Converter 1ª página em PNG + Vision
+  // ================================================================
+  console.log(
+    "[OCR PDF] Pouco ou nenhum texto. Assumindo PDF escaneado → OCR visual."
+  );
+
+  if (!openai) {
+    console.error("[OCR PDF] OPENAI_API_KEY não configurada.");
     return {
       fornecedor: "",
       cnpj: "",
@@ -186,54 +301,93 @@ async function processarPdf(buffer) {
     };
   }
 
-  console.log("[OCR PDF] PDF digital detectado. Enviando texto ao GPT...");
-
-  const resp = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content:
-          "Analise o texto de comprovantes e retorne apenas JSON: fornecedor, cnpj, data, valor, descricao, texto_completo.",
-      },
-      {
-        role: "user",
-        content: textoExtraido.slice(0, 16000),
-      },
-    ],
-  });
-
-  let resposta = resp.choices?.[0]?.message?.content || "";
-  resposta = resposta.replace(/```json/gi, "").replace(/```/g, "");
-
   try {
-    const json = JSON.parse(resposta);
-    json.texto_completo = textoExtraido;
-    return json;
-  } catch {
+    const pngBuffer = await converterPdfParaPngPrimeiraPagina(buffer);
+
+    const b64 = pngBuffer.toString("base64");
+    const dataUrl = `data:image/png;base64,${b64}`;
+
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você está analisando a imagem da 1ª página de um comprovante escaneado. Extraia os campos: fornecedor, cnpj, data, valor, descricao e texto_completo. Responda SOMENTE em JSON.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Extraia os dados deste comprovante:" },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    });
+
+    let texto = resp.choices?.[0]?.message?.content || "";
+    texto = texto.replace(/```json/gi, "").replace(/```/g, "");
+
+    try {
+      const json = JSON.parse(texto);
+      json.texto_completo = texto;
+      return json;
+    } catch {
+      console.warn("[OCR PDF] Falha ao parsear JSON de PDF escaneado.");
+      return {
+        fornecedor: "",
+        cnpj: "",
+        valor: "",
+        data: "",
+        descricao: "",
+        texto_completo: texto,
+      };
+    }
+  } catch (err) {
+    console.error(
+      "[OCR PDF] Erro ao converter PDF para PNG ou chamar Vision:",
+      err
+    );
     return {
       fornecedor: "",
       cnpj: "",
       valor: "",
       data: "",
       descricao: "",
-      texto_completo: textoExtraido,
+      texto_completo: "",
     };
   }
 }
 
 // ============================================================================
-//  ENVIAR AO SIGO OBRAS
+//  ENVIAR PARA SIGO OBRAS (Mocha) – Ajuste do JSON
 // ============================================================================
-async function enviarDadosParaMocha(data) {
+async function enviarDadosParaMocha(pendente) {
+  if (!MOCHA_OCR_URL) {
+    console.error("[MOCHA] MOCHA_OCR_URL não configurada.");
+    return { erro: "MOCHA_OCR_URL não configurada" };
+  }
+
+  const payload = {
+    telefone: pendente.userPhone,
+    arquivo_url: pendente.fileUrl,
+    fornecedor: pendente.fornecedor || "",
+    cnpj: pendente.cnpj || "",
+    valor: pendente.valor || "",
+    data: pendente.data || "",
+    descricao: pendente.descricao || "",
+    texto_ocr: pendente.texto_ocr || "",
+  };
+
+  console.log("[MOCHA][REQUEST]", payload);
+
   const resp = await fetch(MOCHA_OCR_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
 
   const resultado = await resp.json().catch(() => ({}));
-
   console.log("[MOCHA][RESP]", resultado);
 
   return resultado;
@@ -257,10 +411,14 @@ app.get("/webhook/whatsapp", (c) => {
 });
 
 // ============================================================================
-//  RECEBER MENSAGENS DO WHATSAPP
+//  WEBHOOK – RECEBIMENTO DE MENSAGENS WHATSAPP
 // ============================================================================
 app.post("/webhook/whatsapp", async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json().catch((e) => {
+    console.error("[WEBHOOK] Erro ao parsear JSON:", e);
+    return {};
+  });
+
   const msg = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
   if (!msg) {
@@ -271,9 +429,11 @@ app.post("/webhook/whatsapp", async (c) => {
   const from = msg.from;
   const type = msg.type;
 
-  // CONFIRMAÇÃO SIM
+  // ============================================================
+  //  CONFIRMAÇÃO "SIM"
+  // ============================================================
   if (type === "text") {
-    const texto = msg.text.body.trim().toUpperCase();
+    const texto = msg.text?.body?.trim().toUpperCase() || "";
 
     if (texto === "SIM") {
       const pendente = ocrPendentes[from];
@@ -300,7 +460,9 @@ app.post("/webhook/whatsapp", async (c) => {
     return c.json({ status: "ok" });
   }
 
-  // ARQUIVOS (IMAGEM / PDF DIGITAL)
+  // ============================================================
+  //  IMAGEM OU PDF
+  // ============================================================
   if (type === "image" || type === "document") {
     const mediaId = type === "image" ? msg.image.id : msg.document.id;
     const mime = type === "image" ? msg.image.mime_type : msg.document.mime_type;
@@ -313,13 +475,6 @@ app.post("/webhook/whatsapp", async (c) => {
       dados = await processarImagem(midia.buffer, mime);
     } else if (mime === "application/pdf") {
       dados = await processarPdf(midia.buffer);
-
-      if (!dados.texto_completo.trim()) {
-        await enviarMensagemWhatsApp(
-          from,
-          "Este PDF parece ser escaneado (somente imagem). Por favor envie uma foto do comprovante 📸"
-        );
-      }
     }
 
     ocrPendentes[from] = {
@@ -347,6 +502,7 @@ app.post("/webhook/whatsapp", async (c) => {
     return c.json({ status: "ok" });
   }
 
+  // OUTROS TIPOS
   await enviarMensagemWhatsApp(from, "Envie texto, imagem ou PDF.");
   return c.json({ status: "ok" });
 });

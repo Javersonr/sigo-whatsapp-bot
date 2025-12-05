@@ -15,6 +15,7 @@
     "node-fetch": "^3.3.2",
     "openai": "^6.10.0",
     "pdf-parse": "^2.4.5",
+    "pdf-poppler": "^0.2.3",
     "pdf2json": "^4.0.0"
   },
   "devDependencies": {
