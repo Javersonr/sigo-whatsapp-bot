@@ -1,7 +1,7 @@
 // ============================================================================
 //  BOT WHATSAPP – OCR IMAGEM + PDF DIGITAL + PDF ESCANEADO
 //  Envio para SIGO OBRAS (Mocha) – /api/ocr-receber-arquivo
-//  Versão: 06/12/2025
+//  Versão: 06/12/2025 (sem pdf-poppler, usando pdftoppm)
 // ============================================================================
 
 import { Hono } from "hono";
@@ -13,11 +13,13 @@ import { createRequire } from "module";
 import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 dotenv.config();
 
 // ============================================================================
-//  DEPENDÊNCIAS COMMONJS (pdf-parse e pdf-poppler)
+//  DEPENDÊNCIAS COMMONJS (pdf-parse)
 // ============================================================================
 const require = createRequire(import.meta.url);
 
@@ -27,7 +29,7 @@ const pdfParse =
     ? pdfParseModule
     : pdfParseModule.default;
 
-const { Poppler } = require("pdf-poppler");
+const execFileAsync = promisify(execFile);
 
 // ============================================================================
 //  CONFIG
@@ -62,7 +64,7 @@ const ocrPendentes =
   globalThis.ocrPendentes || (globalThis.ocrPendentes = {});
 
 // ============================================================================
-//  CONVERTER PDF -> PNG (1ª PÁGINA) PARA OCR VISUAL
+//  CONVERTER PDF -> PNG (1ª PÁGINA) COM pdftoppm (poppler-utils)
 // ============================================================================
 async function converterPdfParaPngPrimeiraPagina(buffer) {
   const tmpDir = "/tmp"; // funciona bem no Railway
@@ -74,23 +76,22 @@ async function converterPdfParaPngPrimeiraPagina(buffer) {
   // 1) Grava o PDF em disco
   await fs.writeFile(inputPath, buffer);
 
-  const poppler = new Poppler();
+  // 2) Converte 1ª página em PNG usando pdftoppm
+  // Saída: <outputPrefix>-1.png
+  await execFileAsync("pdftoppm", [
+    "-png",
+    "-f",
+    "1",
+    "-l",
+    "1",
+    inputPath,
+    outputPrefix,
+  ]);
 
-  // 2) Converte usando pdf-poppler (via pdftocairo)
-  //    Saída: ocr_<id>.png
-  await poppler.pdfToCairo(inputPath, outputPrefix, {
-    pngFile: true,
-    singleFile: true,
-    firstPageToConvert: 1,
-    lastPageToConvert: 1,
-  });
-
-  const pngPath = `${outputPrefix}.png`;
-
-  // 3) Lê o PNG gerado
+  const pngPath = `${outputPrefix}-1.png`;
   const pngBuffer = await fs.readFile(pngPath);
 
-  // 4) Limpa arquivos temporários
+  // 3) Limpa arquivos temporários
   await fs.unlink(inputPath).catch(() => {});
   await fs.unlink(pngPath).catch(() => {});
 
@@ -360,7 +361,7 @@ async function processarPdf(buffer) {
 }
 
 // ============================================================================
-//  ENVIAR PARA SIGO OBRAS (Mocha) – Ajuste do JSON
+//  ENVIAR PARA SIGO OBRAS (Mocha)
 // ============================================================================
 async function enviarDadosParaMocha(pendente) {
   if (!MOCHA_OCR_URL) {
