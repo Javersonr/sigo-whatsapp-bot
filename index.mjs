@@ -148,19 +148,19 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
         role: 'user',
         content: [
           {
-            type: 'text',
+            type: 'input_text',
             text: 'Extraia os dados estruturados deste comprovante/nota.',
           },
           {
-            type: 'image_url',
-            image_url: {
-              url: dataUrl,
-            },
+            type: 'input_image',
+            image_url: dataUrl,
           },
         ],
       },
     ],
   })
+
+  console.log('[OCR][RAW MESSAGE]', resp.choices[0].message)
 
   let dados = {
     fornecedor: '',
@@ -178,12 +178,19 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
       content = content.map((c) => c.text || '').join('\n')
     }
 
-    const parsed = JSON.parse(content)
+    // tenta achar só o JSON dentro do texto (caso venha texto + explicação)
+    const match = content.match(/\{[\s\S]*\}/)
+    const jsonText = match ? match[0] : content
+
+    const parsed = JSON.parse(jsonText)
+
     dados = {
       ...dados,
       ...parsed,
     }
   } catch (e) {
+    console.error('[OCR] Erro ao fazer parse do JSON:', e)
+
     let raw = resp.choices[0].message.content
     if (Array.isArray(raw)) {
       raw = raw.map((c) => c.text || '').join('\n')
@@ -354,10 +361,28 @@ app.post('/webhook/whatsapp', async (c) => {
       const descricao = dados.descricao || ''
       const textoCompleto = dados.texto_completo || ''
 
+      // Se não encontrou nada estruturado, ainda assim tenta mandar o texto bruto pro Mocha
       if (!fornecedor && !cnpj && !valor && !dataDoc && !descricao) {
+        if (textoCompleto) {
+          try {
+            await enviarDadosParaMochaOCR({
+              userPhone: from,
+              fileUrl: fileUrlFromMeta || midia.fileUrl || null,
+              fornecedor: '',
+              cnpj: '',
+              valor: '',
+              data: '',
+              descricao: '',
+              textoOcr: textoCompleto,
+            })
+          } catch (e) {
+            console.error('[MOCHA OCR] Falha ao enviar texto bruto para SIGO Obras:', e)
+          }
+        }
+
         await enviarMensagemWhatsApp(
           from,
-          'Recebi o arquivo, mas não consegui identificar os dados do comprovante 😕\n\n' +
+          'Recebi o arquivo, mas não consegui identificar claramente os dados do comprovante 😕\n\n' +
             'Tente enviar uma foto mais nítida, enquadrando só o documento, ou envie um PDF se tiver.'
         )
         return c.json({ status: 'ok' })
