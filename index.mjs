@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import dotenv from 'dotenv'
 import OpenAI from 'openai'
-import pdfParse from 'pdf-parse'
+import * as pdfParse from 'pdf-parse'
 
 dotenv.config()
 
@@ -220,7 +220,8 @@ async function processarPdfComOCR(buffer) {
   }
 
   // 1) Extrair texto do PDF
-  const parsed = await pdfParse(buffer)
+  const parsePdf = pdfParse.default || pdfParse
+  const parsed = await parsePdf(buffer)
   const texto = (parsed.text || '').trim()
 
   console.log('[OCR PDF][TEXTO EXTRAÍDO INICIAL]', texto.slice(0, 500))
@@ -284,11 +285,10 @@ async function processarPdfComOCR(buffer) {
     dados = {
       ...dados,
       ...parsedJson,
-      texto_completo: texto, // garantimos que o texto do PDF fique salvo
+      texto_completo: texto,
     }
   } catch (e) {
     console.error('[OCR PDF] Erro ao fazer parse do JSON:', e)
-    // dados.texto_completo já está com o texto do PDF
   }
 
   return dados
@@ -477,7 +477,7 @@ app.post('/webhook/whatsapp', async (c) => {
       const descricao = dados.descricao || ''
       const textoCompleto = dados.texto_completo || ''
 
-      // 3) Sempre tenta enviar algo para o Mocha (mesmo que só texto_ocr ou só file_url)
+      // 3) Sempre tenta enviar algo para o Mocha
       try {
         await enviarDadosParaMochaOCR({
           userPhone: from,
@@ -515,7 +515,7 @@ app.post('/webhook/whatsapp', async (c) => {
         return c.json({ status: 'ok' })
       }
 
-      // Se conseguiu extrair dados estruturados (principalmente para imagem / pdf legível)
+      // Se conseguiu extrair dados estruturados
       const valorFormatado =
         typeof valor === 'number'
           ? `R$ ${valor.toFixed(2).replace('.', ',')}`
