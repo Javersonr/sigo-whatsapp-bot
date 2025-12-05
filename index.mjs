@@ -23,11 +23,8 @@ dotenv.config();
 // ============================================================================
 const require = createRequire(import.meta.url);
 
-const pdfParseModule = require("pdf-parse");
-const pdfParse =
-  typeof pdfParseModule === "function"
-    ? pdfParseModule
-    : pdfParseModule.default;
+// pdf-parse retorna diretamente a função (CommonJS)
+const pdfParse = require("pdf-parse");
 
 const execFileAsync = promisify(execFile);
 
@@ -97,6 +94,8 @@ async function converterPdfParaPngPrimeiraPagina(buffer) {
 
   return pngBuffer;
 }
+
+
 
 // ============================================================================
 //  ENVIAR TEXTO NO WHATSAPP
