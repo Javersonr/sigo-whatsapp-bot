@@ -73,7 +73,7 @@ async function enviarMensagemWhatsApp(to, body) {
   return data
 }
 
-// 🔹 Resposta simples para TEXTO (depois você pode trocar por IA/Mocha)
+// 🔹 Resposta simples para TEXTO
 async function responderIA(texto) {
   return `Recebido: ${texto}`
 }
@@ -125,7 +125,7 @@ async function baixarMidiaWhatsApp(mediaId) {
   }
 }
 
-// 🔹 Fazer OCR + interpretação no próprio bot (OpenAI Vision)
+// 🔹 Fazer OCR + interpretação no próprio bot (OpenAI Vision) – IMAGEM APENAS
 async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
   if (!openaiClient) {
     throw new Error('OPENAI_API_KEY não configurado')
@@ -148,11 +148,11 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
         role: 'user',
         content: [
           {
-            type: 'text', // ✅ aqui é "text"
+            type: 'text',
             text: 'Extraia os dados estruturados deste comprovante/nota.',
           },
           {
-            type: 'image_url', // ✅ aqui é "image_url"
+            type: 'image_url',
             image_url: {
               url: dataUrl,
             },
@@ -180,7 +180,6 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
       content = content.map((c) => c.text || '').join('\n')
     }
 
-    // tenta achar só o JSON dentro do texto (caso venha texto + explicação)
     const match = content.match(/\{[\s\S]*\}/)
     const jsonText = match ? match[0] : content
 
@@ -202,7 +201,6 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
 
   return dados
 }
-
 
 // 🔹 Enviar DADOS já processados para o endpoint da SIGO Obras (Mocha)
 async function enviarDadosParaMochaOCR({
@@ -354,8 +352,26 @@ app.post('/webhook/whatsapp', async (c) => {
       const buffer = midia.buffer
       const mime = mimeType || midia.mimeType
 
-      // 2) OCR + interpretação (OpenAI)
-      const dados = await processarImagemComOCR(buffer, mime)
+      // 2) Preparar objeto de dados padrão
+      let dados = {
+        fornecedor: '',
+        cnpj: '',
+        valor: '',
+        data: '',
+        descricao: '',
+        texto_completo: '',
+      }
+
+      // 🟢 Só roda OCR da OpenAI se for IMAGEM
+      if (mime.startsWith('image/')) {
+        try {
+          dados = await processarImagemComOCR(buffer, mime)
+        } catch (e) {
+          console.error('[OCR] Erro ao processar imagem com OpenAI:', e)
+        }
+      } else {
+        console.log('[OCR] Arquivo não é imagem, mime=', mime, '– pulando OCR de imagem.')
+      }
 
       const fornecedor = dados.fornecedor || ''
       const cnpj = dados.cnpj || ''
@@ -364,34 +380,42 @@ app.post('/webhook/whatsapp', async (c) => {
       const descricao = dados.descricao || ''
       const textoCompleto = dados.texto_completo || ''
 
-      // Se não encontrou nada estruturado, ainda assim tenta mandar o texto bruto pro Mocha
+      // 3) SEM dados estruturados → ainda assim envia algo ao Mocha
       if (!fornecedor && !cnpj && !valor && !dataDoc && !descricao) {
-        if (textoCompleto) {
-          try {
-            await enviarDadosParaMochaOCR({
-              userPhone: from,
-              fileUrl: fileUrlFromMeta || midia.fileUrl || null,
-              fornecedor: '',
-              cnpj: '',
-              valor: '',
-              data: '',
-              descricao: '',
-              textoOcr: textoCompleto,
-            })
-          } catch (e) {
-            console.error('[MOCHA OCR] Falha ao enviar texto bruto para SIGO Obras:', e)
-          }
+        try {
+          await enviarDadosParaMochaOCR({
+            userPhone: from,
+            fileUrl: fileUrlFromMeta || midia.fileUrl || null,
+            fornecedor: '',
+            cnpj: '',
+            valor: '',
+            data: '',
+            descricao: '',
+            textoOcr: textoCompleto || '',
+          })
+        } catch (e) {
+          console.error('[MOCHA OCR] Falha ao enviar dados (vazios) para SIGO Obras:', e)
         }
 
-        await enviarMensagemWhatsApp(
-          from,
-          'Recebi o arquivo, mas não consegui identificar claramente os dados do comprovante 😕\n\n' +
-            'Tente enviar uma foto mais nítida, enquadrando só o documento, ou envie um PDF se tiver.'
-        )
+        // Resposta pro usuário (PDF ou imagem ruim)
+        if (mime.startsWith('application/pdf')) {
+          await enviarMensagemWhatsApp(
+            from,
+            'Recebi o seu PDF 📄, mas por enquanto só consigo fazer leitura automática de IMAGENS.\n\n' +
+              'Se possível, envie uma FOTO bem nítida do comprovante ou nota.'
+          )
+        } else {
+          await enviarMensagemWhatsApp(
+            from,
+            'Recebi o arquivo, mas não consegui identificar claramente os dados do comprovante 😕\n\n' +
+              'Tente enviar uma foto mais nítida, enquadrando só o documento, ou envie um PDF bem legível.'
+          )
+        }
+
         return c.json({ status: 'ok' })
       }
 
-      // 3) Enviar DADOS para SIGO Obras (Mocha)
+      // 4) Com dados estruturados → envia pro Mocha normalmente
       try {
         await enviarDadosParaMochaOCR({
           userPhone: from,
@@ -407,7 +431,7 @@ app.post('/webhook/whatsapp', async (c) => {
         console.error('[MOCHA OCR] Falha ao enviar dados para SIGO Obras:', e)
       }
 
-      // 4) Resumo pro usuário
+      // 5) Resumo pro usuário
       const valorFormatado =
         typeof valor === 'number'
           ? `R$ ${valor.toFixed(2).replace('.', ',')}`
