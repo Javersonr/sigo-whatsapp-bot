@@ -1,7 +1,7 @@
 // ============================================================================
-//  BOT WHATSAPP – OCR IMAGEM + OCR PDF (digital + escaneado)
-//  Integração direta com SIGO OBRAS (Mocha)
-//  Versão Final – 06/12/2025
+//  BOT WHATSAPP – OCR IMAGEM + PDF DIGITAL – ENVIO PARA SIGO OBRAS
+//  Versão estável 06/12/2025
+//  OBS: PDF ESCANEADO NÃO USA VISION (OpenAI NÃO ACEITA image_url PDF)
 // ============================================================================
 
 import { Hono } from "hono";
@@ -13,12 +13,16 @@ import { createRequire } from "module";
 
 dotenv.config();
 
-// pdf-parse só funciona via require
+// pdf-parse via require (CommonJS)
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
+const pdfParseModule = require("pdf-parse");
+const pdfParse =
+  typeof pdfParseModule === "function"
+    ? pdfParseModule
+    : pdfParseModule.default;
 
 // ============================================================================
-//  CONFIGURAÇÃO
+//  CONFIG
 // ============================================================================
 const GRAPH_API_BASE = "https://graph.facebook.com/v19.0";
 
@@ -45,12 +49,12 @@ console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "FALTANDO");
 console.log("MOCHA_OCR_URL:", MOCHA_OCR_URL || "FALTANDO");
 console.log("=================");
 
-// Memória temporária até o usuário digitar “SIM”
+// memória temporária
 const ocrPendentes =
   globalThis.ocrPendentes || (globalThis.ocrPendentes = {});
 
 // ============================================================================
-//  ENVIAR MENSAGEM TEXTO VIA WHATSAPP
+//  ENVIAR TEXTO NO WHATSAPP
 // ============================================================================
 async function enviarMensagemWhatsApp(to, body) {
   const url = `${GRAPH_API_BASE}/${PHONE_NUMBER_ID}/messages`;
@@ -72,6 +76,7 @@ async function enviarMensagemWhatsApp(to, body) {
   });
 
   const data = await resp.json().catch(() => ({}));
+
   console.log("[WhatsApp][STATUS]", resp.status);
   console.log("[WhatsApp][RESPONSE]", data);
 
@@ -79,7 +84,7 @@ async function enviarMensagemWhatsApp(to, body) {
 }
 
 // ============================================================================
-//  BUSCAR E BAIXAR MÍDIA DO WHATSAPP
+//  BAIXAR MÍDIA DO WHATSAPP
 // ============================================================================
 async function buscarInfoMidia(mediaId) {
   const url = `${GRAPH_API_BASE}/${mediaId}`;
@@ -109,7 +114,7 @@ async function baixarMidia(mediaId) {
 }
 
 // ============================================================================
-//  OCR DE IMAGEM – OpenAI Vision
+//  OCR IMAGEM (VISION)
 // ============================================================================
 async function processarImagem(buffer, mimeType) {
   const b64 = buffer.toString("base64");
@@ -133,7 +138,7 @@ async function processarImagem(buffer, mimeType) {
     ],
   });
 
-  let texto = resp.choices[0].message.content;
+  let texto = resp.choices?.[0]?.message?.content || "";
   texto = texto.replace(/```json/gi, "").replace(/```/g, "");
 
   try {
@@ -151,68 +156,37 @@ async function processarImagem(buffer, mimeType) {
 }
 
 // ============================================================================
-//  OCR DE PDF (Digital OU Escaneado)
+//  OCR PDF (Somente PDF DIGITAL – texto selecionável)
 // ============================================================================
 async function processarPdf(buffer) {
-  console.log("[OCR PDF] Tentando identificar se PDF é digital...");
+  console.log("[OCR PDF] Tentando extrair texto via pdf-parse...");
 
   let textoExtraido = "";
+
   try {
-    const data = await pdfParse(buffer);
-    textoExtraido = data.text || "";
+    const result = await pdfParse(buffer);
+    textoExtraido = result.text || "";
   } catch (e) {
-    console.log("[OCR PDF] pdf-parse falhou:", e.message);
+    console.log("[OCR PDF] Erro pdf-parse:", e.message);
   }
 
-  const textoTratado = textoExtraido.replace(/\s+/g, "");
+  // remover espaços
+  const textoTratado = textoExtraido.replace(/\s+/g, "").trim();
 
-  // ========================================================================
-  // PDF DIGITAL → Tem texto real
-  // ========================================================================
-  if (textoTratado.length > 20) {
-    console.log("[OCR PDF] PDF digital detectado → usando GPT texto");
-
-    const resp = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "Analise o texto e retorne somente JSON: fornecedor, cnpj, data, valor, descricao, texto_completo.",
-        },
-        {
-          role: "user",
-          content: textoExtraido.slice(0, 16000),
-        },
-      ],
-    });
-
-    let resposta = resp.choices[0].message.content;
-    resposta = resposta.replace(/```json/gi, "").replace(/```/g, "");
-
-    try {
-      const json = JSON.parse(resposta);
-      json.texto_completo = textoExtraido;
-      return json;
-    } catch {
-      return {
-        fornecedor: "",
-        cnpj: "",
-        valor: "",
-        data: "",
-        descricao: "",
-        texto_completo: textoExtraido,
-      };
-    }
+  // Se NÃO tem texto → PDF escaneado
+  if (!textoTratado || textoTratado.length <= 20) {
+    console.log("[OCR PDF] Parece um PDF escaneado. (Sem OCR no momento)");
+    return {
+      fornecedor: "",
+      cnpj: "",
+      valor: "",
+      data: "",
+      descricao: "",
+      texto_completo: "",
+    };
   }
 
-  // ========================================================================
-  // PDF ESCANEADO → OCR via OpenAI Vision
-  // ========================================================================
-  console.log("[OCR PDF] PDF escaneado → usando GPT visão");
-
-  const b64 = buffer.toString("base64");
-  const dataUrl = `data:application/pdf;base64,${b64}`;
+  console.log("[OCR PDF] PDF digital detectado. Enviando texto ao GPT...");
 
   const resp = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -220,23 +194,22 @@ async function processarPdf(buffer) {
       {
         role: "system",
         content:
-          "Você está analisando um PDF escaneado de comprovante. Extraia os campos: fornecedor, cnpj, data, valor, descricao e texto_completo. Retorne apenas JSON.",
+          "Analise o texto de comprovantes e retorne apenas JSON: fornecedor, cnpj, data, valor, descricao, texto_completo.",
       },
       {
         role: "user",
-        content: [
-          { type: "text", text: "Extraia os dados deste PDF:" },
-          { type: "image_url", image_url: { url: dataUrl } },
-        ],
+        content: textoExtraido.slice(0, 16000),
       },
     ],
   });
 
-  let texto = resp.choices[0].message.content;
-  texto = texto.replace(/```json/gi, "").replace(/```/g, "");
+  let resposta = resp.choices?.[0]?.message?.content || "";
+  resposta = resposta.replace(/```json/gi, "").replace(/```/g, "");
 
   try {
-    return JSON.parse(texto);
+    const json = JSON.parse(resposta);
+    json.texto_completo = textoExtraido;
+    return json;
   } catch {
     return {
       fornecedor: "",
@@ -244,13 +217,13 @@ async function processarPdf(buffer) {
       valor: "",
       data: "",
       descricao: "",
-      texto_completo: texto,
+      texto_completo: textoExtraido,
     };
   }
 }
 
 // ============================================================================
-//  ENVIAR PARA SIGO OBRAS (Mocha)
+//  ENVIAR AO SIGO OBRAS
 // ============================================================================
 async function enviarDadosParaMocha(data) {
   const resp = await fetch(MOCHA_OCR_URL, {
@@ -260,6 +233,7 @@ async function enviarDadosParaMocha(data) {
   });
 
   const resultado = await resp.json().catch(() => ({}));
+
   console.log("[MOCHA][RESP]", resultado);
 
   return resultado;
@@ -283,7 +257,7 @@ app.get("/webhook/whatsapp", (c) => {
 });
 
 // ============================================================================
-//  RECEBIMENTO DE MENSAGENS DO WHATSAPP
+//  RECEBER MENSAGENS DO WHATSAPP
 // ============================================================================
 app.post("/webhook/whatsapp", async (c) => {
   const body = await c.req.json();
@@ -297,7 +271,7 @@ app.post("/webhook/whatsapp", async (c) => {
   const from = msg.from;
   const type = msg.type;
 
-  // CONFIRMAÇÃO “SIM”
+  // CONFIRMAÇÃO SIM
   if (type === "text") {
     const texto = msg.text.body.trim().toUpperCase();
 
@@ -326,7 +300,7 @@ app.post("/webhook/whatsapp", async (c) => {
     return c.json({ status: "ok" });
   }
 
-  // ARQUIVO (IMAGEM OU PDF)
+  // ARQUIVOS (IMAGEM / PDF DIGITAL)
   if (type === "image" || type === "document") {
     const mediaId = type === "image" ? msg.image.id : msg.document.id;
     const mime = type === "image" ? msg.image.mime_type : msg.document.mime_type;
@@ -339,9 +313,15 @@ app.post("/webhook/whatsapp", async (c) => {
       dados = await processarImagem(midia.buffer, mime);
     } else if (mime === "application/pdf") {
       dados = await processarPdf(midia.buffer);
+
+      if (!dados.texto_completo.trim()) {
+        await enviarMensagemWhatsApp(
+          from,
+          "Este PDF parece ser escaneado (somente imagem). Por favor envie uma foto do comprovante 📸"
+        );
+      }
     }
 
-    // Guardar até o usuário confirmar
     ocrPendentes[from] = {
       userPhone: from,
       fileUrl: midia.fileUrl,
