@@ -1,21 +1,21 @@
 // ============================================================================
 //  BOT WHATSAPP – OCR IMAGEM + OCR PDF + ENVIO AO SIGO OBRAS (Mocha)
-//  Versão final 05/12/2025 – usando fetch nativo + pdf-parse (ESM)
+//  Versão 05/12/2025 – Node 18+/22, fetch nativo, pdf-parse
 // ============================================================================
 
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import dotenv from "dotenv";
 import OpenAI from "openai";
-import pdfParseModule from "pdf-parse";
+import * as pdfParseModule from "pdf-parse";
 
 dotenv.config();
 
-// Ajuste para funcionar em ESM (pdf-parse pode exportar como função ou default)
+// Ajuste para funcionar em ESM em qualquer ambiente
 const pdfParse =
   typeof pdfParseModule === "function"
     ? pdfParseModule
-    : pdfParseModule.default;
+    : pdfParseModule.default || pdfParseModule;
 
 // ============================================================================
 //  CONFIGURAÇÃO
@@ -30,7 +30,10 @@ const PHONE_NUMBER_ID =
   process.env.PHONE_NUMBER_ID ||
   "";
 
-const MOCHA_OCR_URL = process.env.MOCHA_OCR_URL || "";
+const MOCHA_OCR_URL =
+  process.env.MOCHA_OCR_URL ||
+  "https://sigoobras2.mocha.app/api/ocr-receber-arquivo";
+
 const PORT = Number(process.env.PORT || 3000);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -44,7 +47,8 @@ console.log("MOCHA_OCR_URL:", MOCHA_OCR_URL || "FALTANDO");
 console.log("=================");
 
 // Memória de OCR pendente até receber "SIM"
-const ocrPendentes = globalThis.ocrPendentes || (globalThis.ocrPendentes = {});
+const ocrPendentes =
+  globalThis.ocrPendentes || (globalThis.ocrPendentes = {});
 
 // ============================================================================
 //  FUNÇÃO – ENVIAR MENSAGEM DE TEXTO
@@ -248,19 +252,32 @@ async function processarPdf(buffer) {
 }
 
 // ============================================================================
-//  ENVIAR PARA SIGO OBRAS (Mocha)
+//  ENVIAR PARA SIGO OBRAS (Mocha) – JSON compatível com /api/ocr-receber-arquivo
 // ============================================================================
 
-async function enviarDadosParaMocha(data) {
+async function enviarDadosParaMocha(pendente) {
   if (!MOCHA_OCR_URL) {
     console.error("[MOCHA] MOCHA_OCR_URL não configurada.");
     return { erro: "MOCHA_OCR_URL não configurada" };
   }
 
+  const payload = {
+    telefone: pendente.userPhone,
+    arquivo_url: pendente.fileUrl,
+    fornecedor: pendente.fornecedor || "",
+    cnpj: pendente.cnpj || "",
+    valor: pendente.valor || "",
+    data: pendente.data || "",
+    descricao: pendente.descricao || "",
+    texto_ocr: pendente.texto_ocr || "",
+  };
+
+  console.log("[MOCHA][REQUEST]", payload);
+
   const resp = await fetch(MOCHA_OCR_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
 
   const resultado = await resp.json().catch(() => ({}));
