@@ -148,12 +148,14 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
         role: 'user',
         content: [
           {
-            type: 'input_text',
+            type: 'text', // ✅ aqui é "text"
             text: 'Extraia os dados estruturados deste comprovante/nota.',
           },
           {
-            type: 'input_image',
-            image_url: dataUrl,
+            type: 'image_url', // ✅ aqui é "image_url"
+            image_url: {
+              url: dataUrl,
+            },
           },
         ],
       },
@@ -200,6 +202,7 @@ async function processarImagemComOCR(buffer, mimeType = 'image/jpeg') {
 
   return dados
 }
+
 
 // 🔹 Enviar DADOS já processados para o endpoint da SIGO Obras (Mocha)
 async function enviarDadosParaMochaOCR({
