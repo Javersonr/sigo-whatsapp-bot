@@ -21,6 +21,18 @@ const PORT = Number(process.env.PORT || 3000)
 const openaiApiKey = process.env.OPENAI_API_KEY || ''
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null
 
+// Helper para carregar pdf-parse em ambiente ESM
+let pdfParseFn = null
+
+async function getPdfParse() {
+  if (!pdfParseFn) {
+    const mod = await import('pdf-parse')
+    pdfParseFn = mod.default || mod
+  }
+  return pdfParseFn
+}
+
+
 // 🔹 Log das variáveis principais
 console.log('=== VARIÁVEIS DE AMBIENTE ===')
 console.log('VERIFY_TOKEN_META:', VERIFY_TOKEN_META ? 'OK' : 'FALTANDO')
@@ -235,33 +247,58 @@ async function processarImagem(buffer, mimeType = 'image/jpeg') {
 /**
  * 🔹 OCR PDF usando pdf-parse + texto na OpenAI
  */
+// 🔹 OCR PDF: pdf-parse + OpenAI (texto)
 async function processarPdf(buffer) {
   if (!openaiClient) {
-    throw new Error('OPENAI_API_KEY não configurado')
+    throw new Error('OPENAI_API_KEY não configurado para OCR de PDF')
   }
 
-  console.log('[OCR PDF] Extraindo texto do PDF com pdf-parse...')
+  console.log('[OCR PDF] Iniciando extração de texto com pdf-parse...')
 
-  let texto = ''
+  const pdfParse = await getPdfParse()
+  const parsed = await pdfParse(buffer)
+  const texto = (parsed.text || '').trim()
 
-  try {
-    // import dinâmico para evitar erro de default export
-    const pdfParseModule = await import('pdf-parse')
-    const pdfParseFn = pdfParseModule.default || pdfParseModule
+  console.log('[OCR PDF][TEXTO EXTRAÍDO]', texto.slice(0, 500))
 
-    const parsed = await pdfParseFn(buffer)
-    texto = (parsed.text || '').trim()
-
-    console.log(
-      '[OCR PDF] TEXTO EXTRAÍDO INICIAL:',
-      texto.slice(0, 500).replace(/\s+/g, ' ')
-    )
-  } catch (e) {
-    console.error('[OCR PDF] Erro ao extrair texto com pdf-parse:', e)
-    texto = ''
+  if (!texto) {
+    console.warn('[OCR PDF] Nenhum texto extraído do PDF.')
+    return {
+      fornecedor: '',
+      cnpj: '',
+      valor: '',
+      data: '',
+      descricao: '',
+      texto_completo: '',
+    }
   }
 
-  let dadosBase = {
+  // Chamar OpenAI em modo TEXTO (sem image_url)
+  const resp = await openaiClient.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          'Você é um extrator de informações de comprovantes, contas de consumo, boletos e notas fiscais. ' +
+          'A partir do TEXTO abaixo, retorne APENAS um JSON válido com os campos: ' +
+          'fornecedor, cnpj, valor, data, descricao, texto_completo. ' +
+          'Valor como número (ponto decimal, ex: 1234.56). ' +
+          'Data no formato DD/MM/YYYY ou YYYY-MM-DD.',
+      },
+      {
+        role: 'user',
+        content:
+          'Aqui está o texto de um PDF de comprovante/nota/conta. ' +
+          'Extraia os dados e devolva SOMENTE o JSON no formato solicitado, sem explicações adicionais:\n\n' +
+          texto.slice(0, 10000), // limita pra não estourar tokens
+      },
+    ],
+  })
+
+  console.log('[OCR PDF][RAW MESSAGE]', resp.choices[0].message)
+
+  let dados = {
     fornecedor: '',
     cnpj: '',
     valor: '',
@@ -270,50 +307,32 @@ async function processarPdf(buffer) {
     texto_completo: texto,
   }
 
-  if (!texto) {
-    console.log('[OCR PDF] Nenhum texto extraído, retornando dados vazios.')
-    return dadosBase
-  }
-
-  console.log('[OCR PDF] Enviando TEXTO para OpenAI...')
-
-  const resp = await openaiClient.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      {
-        role: 'system',
-        content:
-          'Você é um extrator de informações de comprovantes, notas fiscais, boletos ou comprovantes bancários. ' +
-          'A partir do TEXTO fornecido, identifique os dados e retorne APENAS um JSON válido com os campos: ' +
-          'fornecedor, cnpj, valor, data, descricao, texto_completo. ' +
-          'Valor como número (ponto decimal, ex: 1234.56). Data no formato DD/MM/YYYY ou YYYY-MM-DD.',
-      },
-      {
-        role: 'user',
-        content:
-          'Aqui está o texto de um documento (comprovante, nota ou boleto). ' +
-          'Extraia os dados e devolva SOMENTE o JSON no formato solicitado, sem explicações adicionais:\n\n' +
-          texto.substring(0, 12000),
-      },
-    ],
-  })
-
-  console.log('[OCR PDF][RAW MESSAGE]', resp.choices[0].message)
-
   try {
-    const parsedJson = extrairJsonDaResposta(resp.choices[0].message)
-    const dados = {
-      ...dadosBase,
+    let content = resp.choices[0].message.content
+
+    if (Array.isArray(content)) {
+      content = content.map((c) => c.text || '').join('\n')
+    }
+
+    // Tira ```json ... ```
+    const match = content.match(/\{[\s\S]*\}/)
+    const jsonText = match ? match[0] : content
+
+    const parsedJson = JSON.parse(jsonText)
+
+    dados = {
+      ...dados,
       ...parsedJson,
       texto_completo: texto,
     }
-    console.log('[OCR] Dados extraídos (PDF):', dados)
-    return dados
   } catch (e) {
-    console.error('[OCR PDF] Erro ao parsear JSON da OpenAI:', e)
-    return dadosBase
+    console.error('[OCR PDF] Erro ao fazer parse do JSON:', e)
   }
+
+  console.log('[OCR PDF] Dados extraídos:', dados)
+  return dados
 }
+
 
 /**
  * 🔹 Enviar DADOS para SIGO Obras (Mocha) – só depois do SIM
