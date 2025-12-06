@@ -65,13 +65,6 @@ const ocrPendentes =
 // ============================================================================
 
 async function enviarMensagemWhatsApp(to, body) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-    console.error(
-      "[WhatsApp][ERRO] Faltando WHATSAPP_TOKEN ou PHONE_NUMBER_ID nas variáveis de ambiente."
-    );
-    return;
-  }
-
   const url = `${GRAPH_API_BASE}/${PHONE_NUMBER_ID}/messages`;
 
   const payload = {
@@ -80,9 +73,6 @@ async function enviarMensagemWhatsApp(to, body) {
     type: "text",
     text: { body },
   };
-
-  console.log("[WhatsApp][SEND][URL]", url);
-  console.log("[WhatsApp][SEND][PAYLOAD]", payload);
 
   const resp = await fetch(url, {
     method: "POST",
@@ -107,24 +97,17 @@ async function enviarMensagemWhatsApp(to, body) {
 async function buscarInfoMidia(mediaId) {
   const url = `${GRAPH_API_BASE}/${mediaId}`;
 
-  console.log("[MEDIA][INFO][URL]", url);
-
   const resp = await fetch(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
   });
 
   const data = await resp.json();
-  console.log("[MEDIA][INFO][RESP]", data);
   return data;
 }
 
 async function baixarMidia(mediaId) {
   const info = await buscarInfoMidia(mediaId);
-
-  if (!info.url) {
-    throw new Error("URL da mídia não encontrada na resposta do WhatsApp.");
-  }
 
   const resp = await fetch(info.url, {
     method: "GET",
@@ -137,12 +120,12 @@ async function baixarMidia(mediaId) {
   return {
     buffer,
     mimeType: info.mime_type,
-    fileUrl: info.url, // 🔹 URL TEMPORÁRIA DA MÍDIA NO WHATSAPP
+    fileUrl: info.url,
   };
 }
 
 // ============================================================================
-/*  OCR IMAGEM (OpenAI Vision) */
+//  OCR IMAGEM (OpenAI Vision)
 // ============================================================================
 
 async function processarImagem(buffer, mimeType) {
@@ -361,16 +344,19 @@ async function processarPdf(buffer) {
 // ============================================================================
 
 function normalizarTelefone(telefone) {
-  // Envia exatamente o número que o WhatsApp manda, apenas dígitos
-  // Ex: "553899448281" -> "553899448281"
-  return (telefone || "").toString().replace(/\D/g, "");
+  // Deixa só dígitos e remove o 55 do DDI se vier com ele
+  const digits = (telefone || "").toString().replace(/\D/g, "");
+  if (digits.startsWith("55") && digits.length > 11) {
+    // Ex: 55 + 11 dígitos → corta o 55
+    return digits.slice(2);
+  }
+  return digits;
 }
 
-// Converte "dd/mm/aaaa" -> "aaaa-mm-dd"
-// Se não bater, tenta aproveitar "aaaa-mm-dd" e remove o horário
-function normalizarDataSimples(dataStr) {
+// tenta converter "dd/mm/aaaa" -> "aaaa-mm-dd"
+// se já vier "aaaa-mm-dd" ou "aaaa-mm-ddT", normaliza para só "aaaa-mm-dd"
+function normalizarDataParaIso(dataStr) {
   if (!dataStr) return "";
-
   const s = dataStr.toString().trim();
 
   // já parece "aaaa-mm-dd" com ou sem T
@@ -381,21 +367,20 @@ function normalizarDataSimples(dataStr) {
   }
 
   // formato brasileiro dd/mm/aaaa
-  const brMatch = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (brMatch) {
-    const [, d, m, y] = brMatch;
-    return `${y}-${m}-${d}`;
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (m) {
+    const [_, d, mth, y] = m;
+    return `${y}-${mth}-${d}`;
   }
 
-  // fallback: retorna original (Mocha que se vire)
+  // fallback: retorna original
   return s;
 }
 
 // ============================================================================
 //  ENVIAR PARA SIGO OBRAS (Mocha) – FORMATO DOC OFICIAL
-//  Campos esperados pelo endpoint:
-//    telefone, fornecedor, cnpj, valor, data_lancamento, descricao, texto_ocr, arquivo
-//  (e, para compatibilidade, também enviamos data e arquivo_url)
+//  Campos efetivamente usados pelo endpoint:
+//    telefone, fornecedor, cnpj, valor, data, descricao, texto_ocr, arquivo_url
 // ============================================================================
 
 async function enviarDadosParaMocha(pendente) {
@@ -413,23 +398,20 @@ async function enviarDadosParaMocha(pendente) {
   }
   valorNumero = Number(valorNumero) || 0;
 
-  // normaliza data para formato aaaa-mm-dd
-  const dataSimples = normalizarDataSimples(pendente.data);
+  // normaliza data para "aaaa-mm-dd"
+  const dataIso = normalizarDataParaIso(pendente.data);
 
   const payload = {
     telefone: telefoneLimpo,
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
     valor: valorNumero,
-    data_lancamento: dataSimples || null, // nome oficial
-    data: dataSimples || null,            // compat com versão antiga
+    data: dataIso || null,
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
-    arquivo: pendente.fileUrl || "",      // nome oficial
-    arquivo_url: pendente.fileUrl || "",  // compat com versão antiga
+    arquivo_url: pendente.fileUrl || "",
   };
 
-  console.log("[MOCHA][URL]", MOCHA_OCR_URL);
   console.log("[MOCHA][REQUEST]", payload);
 
   const resp = await fetch(MOCHA_OCR_URL, {
@@ -462,14 +444,10 @@ app.get("/webhook/whatsapp", (c) => {
   const token = c.req.query("hub.verify_token");
   const challenge = c.req.query("hub.challenge");
 
-  console.log("[WEBHOOK][GET]", { mode, token, challenge });
-
   if (mode === "subscribe" && token === VERIFY_TOKEN_META) {
-    console.log("[WEBHOOK][GET] Verificação OK");
     return c.text(challenge || "");
   }
 
-  console.log("[WEBHOOK][GET] Erro na verificação do webhook");
   return c.text("Erro na verificação do webhook", 400);
 });
 
@@ -479,8 +457,6 @@ app.get("/webhook/whatsapp", (c) => {
 
 app.post("/webhook/whatsapp", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-
-  console.log("[WEBHOOK][POST][BODY]", JSON.stringify(body, null, 2));
 
   const value = body.entry?.[0]?.changes?.[0]?.value;
   if (!value) {
@@ -497,15 +473,12 @@ app.post("/webhook/whatsapp", async (c) => {
   const from = msg.from;
   const type = msg.type;
 
-  console.log("[WEBHOOK][MSG] FROM:", from, "TYPE:", type);
-
   // ============================================================
   //  CONFIRMAÇÃO "SIM" → envia pré-lançamento para SIGO Obras
   // ============================================================
 
   if (type === "text") {
-    const texto = (msg.text?.body || "").trim().toUpperCase();
-    console.log("[WEBHOOK][TEXT]", texto);
+    const texto = msg.text.body.trim().toUpperCase();
 
     if (texto === "SIM") {
       const pendente = ocrPendentes[from];
@@ -552,8 +525,6 @@ app.post("/webhook/whatsapp", async (c) => {
     const mime =
       type === "image" ? msg.image.mime_type : msg.document.mime_type;
 
-    console.log("[MEDIA][RECEIVED]", { mediaId, mime });
-
     const midia = await baixarMidia(mediaId);
 
     let dados = {};
@@ -572,11 +543,11 @@ app.post("/webhook/whatsapp", async (c) => {
 
     ocrPendentes[from] = {
       userPhone: from,
-      fileUrl: midia.fileUrl, // vai para "arquivo" e "arquivo_url"
+      fileUrl: midia.fileUrl, // vai para "arquivo_url"
       fornecedor: dados.fornecedor || "",
       cnpj: dados.cnpj || "",
       valor: dados.valor || "",
-      data: dados.data || "", // depois vira data_lancamento/data
+      data: dados.data || "",
       descricao: dados.descricao || "",
       texto_ocr: dados.texto_completo || "",
     };
