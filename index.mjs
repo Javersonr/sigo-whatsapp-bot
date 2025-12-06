@@ -15,12 +15,11 @@ import path from "path";
 import fs from "fs/promises";
 import pdfParseCjs from "pdf-parse";
 
-// Garante que pdfParse seja SEMPRE uma função
+dotenv.config();
+
+// Garante que pdfParse seja sempre uma função
 const pdfParse =
   typeof pdfParseCjs === "function" ? pdfParseCjs : pdfParseCjs.default;
-
-
-dotenv.config();
 
 // ============================================================================
 //  CONFIGURAÇÃO
@@ -60,7 +59,6 @@ console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "FALTANDO");
 console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "FALTANDO");
 console.log("MOCHA_OCR_URL:", MOCHA_OCR_URL || "FALTANDO");
 console.log("=================");
-
 
 // Memória de OCR pendente até receber "SIM"
 const ocrPendentes =
