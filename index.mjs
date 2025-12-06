@@ -21,9 +21,10 @@ dotenv.config();
 // ============================================================================
 //  DEPENDÊNCIAS COMMONJS (pdf-parse)
 // ============================================================================
+import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 
-// pdf-parse retorna diretamente a função (CommonJS)
+// pdf-parse exporta diretamente a função (CommonJS)
 const pdfParse = require("pdf-parse");
 
 const execFileAsync = promisify(execFile);
@@ -368,15 +369,26 @@ async function enviarDadosParaMocha(pendente) {
     return { erro: "MOCHA_OCR_URL não configurada" };
   }
 
+  // Normaliza telefone (só números)
+  const telefoneLimpo = (pendente.userPhone || "").replace(/\D/g, "");
+
+  // Converte valor para número
+  let valorNumero = pendente.valor;
+  if (typeof valorNumero === "string") {
+    valorNumero = valorNumero.replace(/\./g, "").replace(",", ".");
+  }
+  valorNumero = Number(valorNumero) || 0;
+
   const payload = {
-    telefone: pendente.userPhone,
-    arquivo_url: pendente.fileUrl,
+    // exatamente os nomes que o Mocha descreveu:
+    telefone: telefoneLimpo,
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
-    valor: pendente.valor || "",
-    data: pendente.data || "",
+    valor: valorNumero,
+    data_lancamento: pendente.data || "",   // 👈 nome que o Mocha espera
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
+    arquivo: pendente.fileUrl || "",        // 👈 nome que o Mocha espera
   };
 
   console.log("[MOCHA][REQUEST]", payload);
@@ -392,6 +404,7 @@ async function enviarDadosParaMocha(pendente) {
 
   return resultado;
 }
+
 
 // ============================================================================
 //  ROTAS HONO
