@@ -1,6 +1,6 @@
 // ============================================================================
 //  BOT WHATSAPP – OCR IMAGEM + OCR PDF + ENVIO AO SIGO OBRAS (Mocha)
-//  Versão alinhada com docs do SIGO – 05/12/2025
+//  Versão alinhada com docs do SIGO – 06/12/2025
 // ============================================================================
 
 import { Hono } from "hono";
@@ -12,17 +12,13 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
-import fs from "fs/promises";
 import { createRequire } from "module";
+import fs from "fs/promises";
 
 const require = createRequire(import.meta.url);
-const pdfParseImport = require("pdf-parse");
-
-// Garante que pdfParse seja sempre uma função (cobre CJS/ESM)
-const pdfParse =
-  typeof pdfParseImport === "function"
-    ? pdfParseImport
-    : pdfParseImport.default;
+// Compatível com diferentes formas de export do pdf-parse
+const pdfParseModule = require("pdf-parse");
+const pdfParse = pdfParseModule.default || pdfParseModule;
 
 dotenv.config();
 
@@ -353,10 +349,9 @@ async function processarPdf(buffer) {
 // ============================================================================
 
 function normalizarTelefone(telefone) {
-  const digits = (telefone || "").toString().replace(/\D/g, "");
-  // Mocha aceita só DDD+numero; docs dizem que ele já remove 55, mas ajudamos
-  if (digits.startsWith("55") && digits.length > 11) return digits.slice(2);
-  return digits;
+  // Envia exatamente o número que o WhatsApp manda, apenas dígitos
+  // Ex: "553899448281" -> "553899448281"
+  return (telefone || "").toString().replace(/\D/g, "");
 }
 
 // tenta converter "dd/mm/aaaa" -> "aaaa-mm-ddT00:00:00Z"
@@ -380,19 +375,21 @@ function normalizarDataParaIso(dataStr) {
 
 // ============================================================================
 //  ENVIAR PARA SIGO OBRAS (Mocha) – FORMATO DOC OFICIAL
-//  Campos: telefone, arquivo_url, fornecedor, cnpj, valor, data, descricao, texto_ocr
+//  Campos esperados pelo endpoint:
+//    telefone, fornecedor, cnpj, valor, data_lancamento, descricao, texto_ocr, arquivo
 // ============================================================================
 
 async function enviarDadosParaMocha(pendente) {
   if (!MOCHA_OCR_URL) {
     console.error("[MOCHA] MOCHA_OCR_URL não configurada.");
-    return { erro: "MOCHA_OCR_URL não configurada" };
+    return { error: "MOCHA_OCR_URL não configurada" };
   }
 
   const telefoneLimpo = normalizarTelefone(pendente.userPhone);
 
   let valorNumero = pendente.valor;
   if (typeof valorNumero === "string") {
+    // converte "1.234,56" -> "1234.56"
     valorNumero = valorNumero.replace(/\./g, "").replace(",", ".");
   }
   valorNumero = Number(valorNumero) || 0;
@@ -401,15 +398,16 @@ async function enviarDadosParaMocha(pendente) {
 
   const payload = {
     telefone: telefoneLimpo,
-    arquivo_url: pendente.fileUrl || "",
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
     valor: valorNumero,
-    data: dataIso || null,
+    data_lancamento: dataIso || null,
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
+    arquivo: pendente.fileUrl || "",
   };
 
+  console.log("[MOCHA][URL]", MOCHA_OCR_URL);
   console.log("[MOCHA][REQUEST]", payload);
 
   const resp = await fetch(MOCHA_OCR_URL, {
@@ -418,10 +416,22 @@ async function enviarDadosParaMocha(pendente) {
     body: JSON.stringify(payload),
   });
 
-  const resultado = await resp.json().catch(() => ({}));
+  const status = resp.status;
+  let resultado;
+  let raw;
+
+  try {
+    const text = await resp.text();
+    raw = text;
+    resultado = text ? JSON.parse(text) : {};
+  } catch (e) {
+    resultado = { raw };
+  }
+
+  console.log("[MOCHA][STATUS]", status);
   console.log("[MOCHA][RESP]", resultado);
 
-  return resultado;
+  return { status, ...resultado };
 }
 
 // ============================================================================
