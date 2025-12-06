@@ -1,6 +1,6 @@
 // ============================================================================
 //  BOT WHATSAPP – OCR IMAGEM + OCR PDF + ENVIO AO SIGO OBRAS (Mocha)
-//  Versão integrada – 05/12/2025
+//  Versão alinhada com docs do SIGO – 05/12/2025
 // ============================================================================
 
 import { Hono } from "hono";
@@ -13,10 +13,10 @@ import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
 import { createRequire } from "module";
+import fs from "fs/promises";
 
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
-const fs = require("fs/promises");
 
 dotenv.config();
 
@@ -113,7 +113,7 @@ async function baixarMidia(mediaId) {
 }
 
 // ============================================================================
-//  FUNÇÃO – OCR de IMAGEM (OpenAI Vision)
+//  OCR IMAGEM (OpenAI Vision)
 // ============================================================================
 
 async function processarImagem(buffer, mimeType) {
@@ -161,8 +161,7 @@ async function processarImagem(buffer, mimeType) {
 }
 
 // ============================================================================
-//  AUXILIAR – Converter primeira página do PDF em PNG (para OCR visual)
-//  Requer poppler-utils (pdftoppm) instalado (via Dockerfile)
+//  CONVERTER PDF -> PNG (1ª página) PARA OCR VISUAL
 // ============================================================================
 
 async function converterPdfParaPngPrimeiraPagina(buffer) {
@@ -202,7 +201,7 @@ async function converterPdfParaPngPrimeiraPagina(buffer) {
 }
 
 // ============================================================================
-//  FUNÇÃO – OCR de PDF (digital + escaneado)
+//  OCR PDF (digital + escaneado)
 // ============================================================================
 
 async function processarPdf(buffer) {
@@ -210,7 +209,6 @@ async function processarPdf(buffer) {
     throw new Error("OPENAI_API_KEY não configurada.");
   }
 
-  // 1) Tentar extrair texto com pdf-parse → PDF digital
   console.log("[OCR PDF] Tentando extrair texto via pdf-parse...");
   let textoExtraido = "";
   let ehDigital = false;
@@ -230,7 +228,6 @@ async function processarPdf(buffer) {
     console.error("[OCR PDF] Erro pdf-parse:", err);
   }
 
-  // Caso 1: PDF digital (texto suficiente)
   if (ehDigital) {
     console.log("[OCR PDF] PDF digital detectado → usando texto + GPT.");
     const resp = await openai.chat.completions.create({
@@ -239,7 +236,7 @@ async function processarPdf(buffer) {
         {
           role: "system",
           content:
-            "Você é um extrator de dados de comprovantes financeiros. Com base no texto abaixo, retorne APENAS um JSON com as chaves: fornecedor, cnpj, data, valor, descricao, texto_completo.",
+            "Você é um extrator de dados de comprovantes. Com base no texto abaixo, retorne APENAS um JSON com as chaves: fornecedor, cnpj, data, valor, descricao, texto_completo.",
         },
         {
           role: "user",
@@ -267,7 +264,6 @@ async function processarPdf(buffer) {
     }
   }
 
-  // Caso 2: PDF escaneado (sem texto) → converter para PNG e usar Vision
   console.log(
     "[OCR PDF] Pouco ou nenhum texto. Assumindo PDF escaneado → OCR visual."
   );
@@ -288,7 +284,10 @@ async function processarPdf(buffer) {
         {
           role: "user",
           content: [
-            { type: "text", text: "Extraia os dados deste comprovante escaneado:" },
+            {
+              type: "text",
+              text: "Extraia os dados deste comprovante escaneado:",
+            },
             { type: "image_url", image_url: { url: dataUrl } },
           ],
         },
@@ -329,9 +328,38 @@ async function processarPdf(buffer) {
 }
 
 // ============================================================================
-//  ENVIAR PARA SIGO OBRAS (Mocha) – PRÉ-LANÇAMENTO FINANCEIRO
-//  Formato conforme documentação do Mocha:
-//  telefone, fornecedor, cnpj, valor, data_lancamento, descricao, texto_ocr, arquivo
+//  HELPERS – normalizar telefone e data
+// ============================================================================
+
+function normalizarTelefone(telefone) {
+  const digits = (telefone || "").toString().replace(/\D/g, "");
+  // Mocha aceita só DDD+numero; docs dizem que ele já remove 55, mas ajudamos
+  if (digits.startsWith("55") && digits.length > 11) return digits.slice(2);
+  return digits;
+}
+
+// tenta converter "dd/mm/aaaa" -> "aaaa-mm-ddT00:00:00Z"
+// se não bater, retorna original
+function normalizarDataParaIso(dataStr) {
+  if (!dataStr) return "";
+  const s = dataStr.toString().trim();
+
+  // já parece ISO
+  if (/\d{4}-\d{2}-\d{2}T/.test(s)) return s;
+
+  // formato brasileiro dd/mm/aaaa
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (m) {
+    const [_, d, mth, y] = m;
+    return `${y}-${mth}-${d}T00:00:00Z`;
+  }
+
+  return s;
+}
+
+// ============================================================================
+//  ENVIAR PARA SIGO OBRAS (Mocha) – FORMATO DOC OFICIAL
+//  Campos: telefone, arquivo_url, fornecedor, cnpj, valor, data, descricao, texto_ocr
 // ============================================================================
 
 async function enviarDadosParaMocha(pendente) {
@@ -340,7 +368,7 @@ async function enviarDadosParaMocha(pendente) {
     return { erro: "MOCHA_OCR_URL não configurada" };
   }
 
-  const telefoneLimpo = (pendente.userPhone || "").replace(/\D/g, "");
+  const telefoneLimpo = normalizarTelefone(pendente.userPhone);
 
   let valorNumero = pendente.valor;
   if (typeof valorNumero === "string") {
@@ -348,15 +376,17 @@ async function enviarDadosParaMocha(pendente) {
   }
   valorNumero = Number(valorNumero) || 0;
 
+  const dataIso = normalizarDataParaIso(pendente.data);
+
   const payload = {
     telefone: telefoneLimpo,
+    arquivo_url: pendente.fileUrl || "",
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
     valor: valorNumero,
-    data_lancamento: pendente.data || "",
+    data: dataIso || null,
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
-    arquivo: pendente.fileUrl || "",
   };
 
   console.log("[MOCHA][REQUEST]", payload);
@@ -381,7 +411,6 @@ const app = new Hono();
 
 app.get("/", (c) => c.text("BOT OK"));
 
-// Verificação de webhook do WhatsApp (GET)
 app.get("/webhook/whatsapp", (c) => {
   const mode = c.req.query("hub.mode");
   const token = c.req.query("hub.verify_token");
@@ -395,7 +424,7 @@ app.get("/webhook/whatsapp", (c) => {
 });
 
 // ============================================================================
-//  RECEBIMENTO DE MENSAGENS (POST)
+//  RECEBIMENTO DE MENSAGENS
 // ============================================================================
 
 app.post("/webhook/whatsapp", async (c) => {
@@ -417,7 +446,7 @@ app.post("/webhook/whatsapp", async (c) => {
   const type = msg.type;
 
   // ============================================================
-  //  CONFIRMAÇÃO "SIM" (lançar no financeiro)
+  //  CONFIRMAÇÃO "SIM" → envia pré-lançamento para SIGO Obras
   // ============================================================
 
   if (type === "text") {
@@ -434,17 +463,24 @@ app.post("/webhook/whatsapp", async (c) => {
         return c.json({ status: "ok" });
       }
 
-      await enviarDadosParaMocha(pendente);
-      await enviarMensagemWhatsApp(
-        from,
-        "Lançamento enviado ao SIGO Obras com sucesso! ✅"
-      );
+      const respMocha = await enviarDadosParaMocha(pendente);
+
+      if (respMocha?.error) {
+        await enviarMensagemWhatsApp(
+          from,
+          `⚠ Não foi possível lançar no SIGO Obras: ${respMocha.error}`
+        );
+      } else {
+        await enviarMensagemWhatsApp(
+          from,
+          "Lançamento enviado ao SIGO Obras com sucesso! ✅"
+        );
+      }
 
       delete ocrPendentes[from];
       return c.json({ status: "ok" });
     }
 
-    // Resposta padrão para outros textos
     await enviarMensagemWhatsApp(
       from,
       "Recebido! Envie uma imagem ou PDF de um comprovante para lançar no financeiro."
@@ -477,7 +513,6 @@ app.post("/webhook/whatsapp", async (c) => {
       return c.json({ status: "ok" });
     }
 
-    // Salva na memória até o usuário confirmar com "SIM"
     ocrPendentes[from] = {
       userPhone: from,
       fileUrl: midia.fileUrl,
@@ -506,7 +541,7 @@ app.post("/webhook/whatsapp", async (c) => {
   // OUTROS TIPOS
   await enviarMensagemWhatsApp(
     from,
-    "Envie um texto, imagem ou PDF para continuar."
+    "Envie texto, imagem ou PDF para continuar."
   );
   return c.json({ status: "ok" });
 });
