@@ -382,18 +382,19 @@ function normalizarDataParaIso(dataStr) {
 async function enviarDadosParaMocha(pendente) {
   if (!MOCHA_OCR_URL) {
     console.error("[MOCHA] MOCHA_OCR_URL não configurada.");
-    return { error: "MOCHA_OCR_URL não configurada" };
+    return { erro: "MOCHA_OCR_URL não configurada" };
   }
 
   const telefoneLimpo = normalizarTelefone(pendente.userPhone);
 
+  // normaliza valor
   let valorNumero = pendente.valor;
   if (typeof valorNumero === "string") {
-    // converte "1.234,56" -> "1234.56"
     valorNumero = valorNumero.replace(/\./g, "").replace(",", ".");
   }
   valorNumero = Number(valorNumero) || 0;
 
+  // normaliza data para ISO (se vier dd/mm/aaaa)
   const dataIso = normalizarDataParaIso(pendente.data);
 
   const payload = {
@@ -401,13 +402,12 @@ async function enviarDadosParaMocha(pendente) {
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
     valor: valorNumero,
-    data_lancamento: dataIso || null,
+    data_lancamento: dataIso || null,   // 🔹 nome certo
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
-    arquivo: pendente.fileUrl || "",
+    arquivo: pendente.fileUrl || ""      // 🔹 nome certo
   };
 
-  console.log("[MOCHA][URL]", MOCHA_OCR_URL);
   console.log("[MOCHA][REQUEST]", payload);
 
   const resp = await fetch(MOCHA_OCR_URL, {
@@ -416,23 +416,18 @@ async function enviarDadosParaMocha(pendente) {
     body: JSON.stringify(payload),
   });
 
-  const status = resp.status;
-  let resultado;
-  let raw;
+  const resultado = await resp.json().catch(async () => {
+    const text = await resp.text().catch(() => "");
+    return { raw: text };
+  });
 
-  try {
-    const text = await resp.text();
-    raw = text;
-    resultado = text ? JSON.parse(text) : {};
-  } catch (e) {
-    resultado = { raw };
-  }
+  console.log("[MOCHA][RESP][STATUS]", resp.status);
+  console.log("[MOCHA][RESP][BODY]", resultado);
 
-  console.log("[MOCHA][STATUS]", status);
-  console.log("[MOCHA][RESP]", resultado);
-
-  return { status, ...resultado };
+  return resultado;
 }
+
+
 
 // ============================================================================
 //  APP HONO – ROTAS
@@ -545,15 +540,16 @@ app.post("/webhook/whatsapp", async (c) => {
     }
 
     ocrPendentes[from] = {
-      userPhone: from,
-      fileUrl: midia.fileUrl,
-      fornecedor: dados.fornecedor || "",
-      cnpj: dados.cnpj || "",
-      valor: dados.valor || "",
-      data: dados.data || "",
-      descricao: dados.descricao || "",
-      texto_ocr: dados.texto_completo || "",
-    };
+  userPhone: from,
+  fileUrl: midia.fileUrl, // vai para "arquivo"
+  fornecedor: dados.fornecedor || "",
+  cnpj: dados.cnpj || "",
+  valor: dados.valor || "",
+  data: dados.data || "",            // depois viro data_lancamento
+  descricao: dados.descricao || "",
+  texto_ocr: dados.texto_completo || ""
+};
+
 
     await enviarMensagemWhatsApp(
       from,
