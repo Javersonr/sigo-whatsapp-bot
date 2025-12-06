@@ -12,11 +12,13 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
-import { createRequire } from "module";
 import fs from "fs/promises";
+import pdfParseCjs from "pdf-parse";
 
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
+// Garante que pdfParse seja SEMPRE uma função
+const pdfParse =
+  typeof pdfParseCjs === "function" ? pdfParseCjs : pdfParseCjs.default;
+
 
 dotenv.config();
 
