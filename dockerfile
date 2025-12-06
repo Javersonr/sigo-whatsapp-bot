@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:18-slim
 
 # Instala o poppler-utils (pdftoppm, pdftocairo, etc.)
 RUN apt-get update && apt-get install -y poppler-utils && rm -rf /var/lib/apt/lists/*
