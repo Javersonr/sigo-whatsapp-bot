@@ -31,7 +31,22 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "";
 const PHONE_NUMBER_ID =
   process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.PHONE_NUMBER_ID || "";
 
-const MOCHA_OCR_URL = process.env.MOCHA_OCR_URL || "";
+// 🔹 Normaliza a MOCHA_OCR_URL
+const rawMochaUrl = (process.env.MOCHA_OCR_URL || "").trim();
+
+// Se a pessoa colocar "POST https://..." no .env, remove o "POST "
+let normalizedMochaUrl = rawMochaUrl;
+if (normalizedMochaUrl.toUpperCase().startsWith("POST ")) {
+  normalizedMochaUrl = normalizedMochaUrl.slice(5).trim();
+}
+
+// Se continuar vazio, usa o padrão oficial
+if (!normalizedMochaUrl) {
+  normalizedMochaUrl = "https://sigoobras2.mocha.app/api/ocr-receber-arquivo";
+}
+
+const MOCHA_OCR_URL = normalizedMochaUrl;
+
 const PORT = Number(process.env.PORT || 3000);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -43,6 +58,7 @@ console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "FALTANDO");
 console.log("OPENAI_API_KEY:", OPENAI_API_KEY ? "OK" : "FALTANDO");
 console.log("MOCHA_OCR_URL:", MOCHA_OCR_URL || "FALTANDO");
 console.log("=================");
+
 
 // Memória de OCR pendente até receber "SIM"
 const ocrPendentes =
