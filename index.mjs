@@ -1,8 +1,3 @@
-// ============================================================================
-//  BOT WHATSAPP – OCR IMAGEM + OCR PDF + ENVIO AO SIGO OBRAS (Mocha)
-//  Versão alinhada com docs do SIGO – 06/12/2025
-// ============================================================================
-
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import dotenv from "dotenv";
@@ -70,6 +65,13 @@ const ocrPendentes =
 // ============================================================================
 
 async function enviarMensagemWhatsApp(to, body) {
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+    console.error(
+      "[WhatsApp][ERRO] Faltando WHATSAPP_TOKEN ou PHONE_NUMBER_ID nas variáveis de ambiente."
+    );
+    return;
+  }
+
   const url = `${GRAPH_API_BASE}/${PHONE_NUMBER_ID}/messages`;
 
   const payload = {
@@ -78,6 +80,9 @@ async function enviarMensagemWhatsApp(to, body) {
     type: "text",
     text: { body },
   };
+
+  console.log("[WhatsApp][SEND][URL]", url);
+  console.log("[WhatsApp][SEND][PAYLOAD]", payload);
 
   const resp = await fetch(url, {
     method: "POST",
@@ -102,17 +107,24 @@ async function enviarMensagemWhatsApp(to, body) {
 async function buscarInfoMidia(mediaId) {
   const url = `${GRAPH_API_BASE}/${mediaId}`;
 
+  console.log("[MEDIA][INFO][URL]", url);
+
   const resp = await fetch(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
   });
 
   const data = await resp.json();
+  console.log("[MEDIA][INFO][RESP]", data);
   return data;
 }
 
 async function baixarMidia(mediaId) {
   const info = await buscarInfoMidia(mediaId);
+
+  if (!info.url) {
+    throw new Error("URL da mídia não encontrada na resposta do WhatsApp.");
+  }
 
   const resp = await fetch(info.url, {
     method: "GET",
@@ -125,12 +137,12 @@ async function baixarMidia(mediaId) {
   return {
     buffer,
     mimeType: info.mime_type,
-    fileUrl: info.url,
+    fileUrl: info.url, // 🔹 URL TEMPORÁRIA DA MÍDIA NO WHATSAPP
   };
 }
 
 // ============================================================================
-//  OCR IMAGEM (OpenAI Vision)
+/*  OCR IMAGEM (OpenAI Vision) */
 // ============================================================================
 
 async function processarImagem(buffer, mimeType) {
@@ -354,22 +366,28 @@ function normalizarTelefone(telefone) {
   return (telefone || "").toString().replace(/\D/g, "");
 }
 
-// tenta converter "dd/mm/aaaa" -> "aaaa-mm-ddT00:00:00Z"
-// se não bater, retorna original
-function normalizarDataParaIso(dataStr) {
+// Converte "dd/mm/aaaa" -> "aaaa-mm-dd"
+// Se não bater, tenta aproveitar "aaaa-mm-dd" e remove o horário
+function normalizarDataSimples(dataStr) {
   if (!dataStr) return "";
+
   const s = dataStr.toString().trim();
 
-  // já parece ISO
-  if (/\d{4}-\d{2}-\d{2}T/.test(s)) return s;
-
-  // formato brasileiro dd/mm/aaaa
-  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (m) {
-    const [_, d, mth, y] = m;
-    return `${y}-${mth}-${d}T00:00:00Z`;
+  // já parece "aaaa-mm-dd" com ou sem T
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return `${y}-${m}-${d}`;
   }
 
+  // formato brasileiro dd/mm/aaaa
+  const brMatch = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (brMatch) {
+    const [, d, m, y] = brMatch;
+    return `${y}-${m}-${d}`;
+  }
+
+  // fallback: retorna original (Mocha que se vire)
   return s;
 }
 
@@ -377,6 +395,7 @@ function normalizarDataParaIso(dataStr) {
 //  ENVIAR PARA SIGO OBRAS (Mocha) – FORMATO DOC OFICIAL
 //  Campos esperados pelo endpoint:
 //    telefone, fornecedor, cnpj, valor, data_lancamento, descricao, texto_ocr, arquivo
+//  (e, para compatibilidade, também enviamos data e arquivo_url)
 // ============================================================================
 
 async function enviarDadosParaMocha(pendente) {
@@ -394,20 +413,23 @@ async function enviarDadosParaMocha(pendente) {
   }
   valorNumero = Number(valorNumero) || 0;
 
-  // normaliza data para ISO (se vier dd/mm/aaaa)
-  const dataIso = normalizarDataParaIso(pendente.data);
+  // normaliza data para formato aaaa-mm-dd
+  const dataSimples = normalizarDataSimples(pendente.data);
 
   const payload = {
     telefone: telefoneLimpo,
     fornecedor: pendente.fornecedor || "",
     cnpj: pendente.cnpj || "",
     valor: valorNumero,
-    data_lancamento: dataIso || null,   // 🔹 nome certo
+    data_lancamento: dataSimples || null, // nome oficial
+    data: dataSimples || null,            // compat com versão antiga
     descricao: pendente.descricao || "",
     texto_ocr: pendente.texto_ocr || "",
-    arquivo: pendente.fileUrl || ""      // 🔹 nome certo
+    arquivo: pendente.fileUrl || "",      // nome oficial
+    arquivo_url: pendente.fileUrl || "",  // compat com versão antiga
   };
 
+  console.log("[MOCHA][URL]", MOCHA_OCR_URL);
   console.log("[MOCHA][REQUEST]", payload);
 
   const resp = await fetch(MOCHA_OCR_URL, {
@@ -427,8 +449,6 @@ async function enviarDadosParaMocha(pendente) {
   return resultado;
 }
 
-
-
 // ============================================================================
 //  APP HONO – ROTAS
 // ============================================================================
@@ -442,10 +462,14 @@ app.get("/webhook/whatsapp", (c) => {
   const token = c.req.query("hub.verify_token");
   const challenge = c.req.query("hub.challenge");
 
+  console.log("[WEBHOOK][GET]", { mode, token, challenge });
+
   if (mode === "subscribe" && token === VERIFY_TOKEN_META) {
+    console.log("[WEBHOOK][GET] Verificação OK");
     return c.text(challenge || "");
   }
 
+  console.log("[WEBHOOK][GET] Erro na verificação do webhook");
   return c.text("Erro na verificação do webhook", 400);
 });
 
@@ -455,6 +479,8 @@ app.get("/webhook/whatsapp", (c) => {
 
 app.post("/webhook/whatsapp", async (c) => {
   const body = await c.req.json().catch(() => ({}));
+
+  console.log("[WEBHOOK][POST][BODY]", JSON.stringify(body, null, 2));
 
   const value = body.entry?.[0]?.changes?.[0]?.value;
   if (!value) {
@@ -471,12 +497,15 @@ app.post("/webhook/whatsapp", async (c) => {
   const from = msg.from;
   const type = msg.type;
 
+  console.log("[WEBHOOK][MSG] FROM:", from, "TYPE:", type);
+
   // ============================================================
   //  CONFIRMAÇÃO "SIM" → envia pré-lançamento para SIGO Obras
   // ============================================================
 
   if (type === "text") {
-    const texto = msg.text.body.trim().toUpperCase();
+    const texto = (msg.text?.body || "").trim().toUpperCase();
+    console.log("[WEBHOOK][TEXT]", texto);
 
     if (texto === "SIM") {
       const pendente = ocrPendentes[from];
@@ -523,6 +552,8 @@ app.post("/webhook/whatsapp", async (c) => {
     const mime =
       type === "image" ? msg.image.mime_type : msg.document.mime_type;
 
+    console.log("[MEDIA][RECEIVED]", { mediaId, mime });
+
     const midia = await baixarMidia(mediaId);
 
     let dados = {};
@@ -540,16 +571,15 @@ app.post("/webhook/whatsapp", async (c) => {
     }
 
     ocrPendentes[from] = {
-  userPhone: from,
-  fileUrl: midia.fileUrl, // vai para "arquivo"
-  fornecedor: dados.fornecedor || "",
-  cnpj: dados.cnpj || "",
-  valor: dados.valor || "",
-  data: dados.data || "",            // depois viro data_lancamento
-  descricao: dados.descricao || "",
-  texto_ocr: dados.texto_completo || ""
-};
-
+      userPhone: from,
+      fileUrl: midia.fileUrl, // vai para "arquivo" e "arquivo_url"
+      fornecedor: dados.fornecedor || "",
+      cnpj: dados.cnpj || "",
+      valor: dados.valor || "",
+      data: dados.data || "", // depois vira data_lancamento/data
+      descricao: dados.descricao || "",
+      texto_ocr: dados.texto_completo || "",
+    };
 
     await enviarMensagemWhatsApp(
       from,
