@@ -3,22 +3,17 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.mjs",
+  "license": "MIT",
   "scripts": {
     "start": "node index.mjs"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.6",
-    "axios": "^1.13.2",
-    "dotenv": "^16.6.1",
-    "form-data": "^4.0.5",
-    "hono": "^4.10.7",
-    "node-fetch": "^3.3.2",
-    "openai": "^6.10.0",
-    "pdf-parse": "^2.4.5",
-    "pdf-poppler": "^0.2.3",
-    "pdf2json": "^4.0.0"
-  },
-  "devDependencies": {
-    "@types/axios": "^0.9.36"
-  }
+  "@hono/node-server": "^1.11.7",
+  "dotenv": "^16.4.5",
+  "hono": "^4.3.5",
+  "openai": "^4.61.0",
+  "pdf-parse": "1.1.1",
+  "node-fetch": "^3.3.2"
+}
+
 }
